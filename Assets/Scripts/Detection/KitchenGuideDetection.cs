@@ -40,7 +40,8 @@ public class KitchenGuideDetection : MonoBehaviour
     private const string ScenePermission = "com.oculus.permission.USE_SCENE";
     private const float ScoreThreshold = 0.3f;   // sample prefab values,
     private const float IouThreshold = 0.4f;     // tuned by Meta for this model
-    private const float MinInferenceInterval = 0.35f;
+    private const float BoostInterval = 0.35f;   // while a recipe step waits on detection
+    private const float AmbientInterval = 2.5f;  // idle counter-watching cadence
     private const float LabelPersistSeconds = 3f;
 
     private static readonly HashSet<string> KitchenClasses = new HashSet<string>
@@ -153,7 +154,14 @@ public class KitchenGuideDetection : MonoBehaviour
                 _cameraAnnounced = true;
                 Debug.Log(Tag + " camera playing at " + _cameraAccess.CurrentResolution);
             }
-            float wait = MinInferenceInterval - (Time.time - _lastInferenceStart);
+            // Duty cycle (Boss's micro-stutter hunt, 2026-11-07): each CPU
+            // inference pass can spike a frame or two; at a flat 0.35 s
+            // cadence forever that reads as constant micro-stutter. Full
+            // rate only while a recipe step is waiting on a detection, a
+            // slow ambient cadence otherwise, and fully paused mid-drag.
+            if (CounterState.Dragging) { yield return new WaitForSeconds(0.3f); continue; }
+            float interval = CounterState.DetectionBoost ? BoostInterval : AmbientInterval;
+            float wait = interval - (Time.time - _lastInferenceStart);
             if (wait > 0f) yield return new WaitForSeconds(wait);
             _lastInferenceStart = Time.time;
             yield return RunInference();

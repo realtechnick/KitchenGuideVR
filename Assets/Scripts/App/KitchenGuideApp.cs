@@ -31,6 +31,12 @@ using UnityEngine.UI;
 public static class CounterState
 {
     public static readonly HashSet<string> Seen = new HashSet<string>();
+
+    // App -> detection coordination: DetectionBoost while the current recipe
+    // step is waiting on a detection; Dragging while a panel/chip is mid-drag
+    // (inference pauses so drags stay smooth).
+    public static bool DetectionBoost;
+    public static bool Dragging;
 }
 
 public class KitchenGuideApp : MonoBehaviour
@@ -244,7 +250,7 @@ public class KitchenGuideApp : MonoBehaviour
             _occlusionMat = Resources.Load<Material>("HandOcclusionMaterial");
 
         _rescanTimer += Time.deltaTime;
-        if (_rescanTimer >= 0.25f)
+        if (_rescanTimer >= 1.0f)
         {
             _rescanTimer = 0f;
             _handRenderers.Clear();
@@ -517,6 +523,7 @@ public class KitchenGuideApp : MonoBehaviour
         _stepTitleText.text = s.Title;
         _stepBodyText.text = s.Body;
         bool hasDetect = s.DetectClass != null;
+        CounterState.DetectionBoost = hasDetect;
         _hintChip.SetActive(hasDetect);
         if (hasDetect)
             _hintText.text = "Show me the " + s.DetectClass + " — I'll check it off when I see it";
@@ -786,6 +793,8 @@ public class KitchenGuideApp : MonoBehaviour
                 _dragging = null;
             }
         }
+
+        CounterState.Dragging = _dragging != null;
 
         DragBar hoveredBar = null;
         TimerChip hoveredChip = null;
