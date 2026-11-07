@@ -107,10 +107,26 @@ public class GazePinchDiagnostic : MonoBehaviour
                 else if (_rightHand == null && h != _leftHand) _rightHand = h;
             }
         }
+        DisableHandMesh(_leftHand);
+        DisableHandMesh(_rightHand);
         HideHandVisuals(_leftHand);
         HideHandVisuals(_rightHand);
         Debug.Log(Tag + " OVRHand found: left=" + (_leftHand != null) +
                   " right=" + (_rightHand != null) + " rig=" + (rig != null));
+    }
+
+    // OVRMesh is visualization ONLY — tracking data lives in OVRHand/OVRSkeleton.
+    // Kill it at the source: a disabled OVRMesh never re-enables its renderer,
+    // which ends the enable-war that made the hands flash (and cost frames) in v3.
+    private static void DisableHandMesh(OVRHand hand)
+    {
+        if (hand == null) return;
+        var mesh = hand.GetComponentInChildren<OVRMesh>(true);
+        if (mesh != null && mesh.enabled)
+        {
+            mesh.enabled = false;
+            Debug.Log(Tag + " disabled OVRMesh (visualization) on " + hand.name);
+        }
     }
 
     // No-hand-models design rule: keep the tracking components, kill the meshes.
