@@ -38,7 +38,7 @@ public class KitchenGuideApp : MonoBehaviour
     private const string Tag = "[KitchenGuide]";
     private const float PinchThreshold = 0.7f;
     private const float SummonSeconds = 0.8f;
-    private const float PanelDistance = 1.5f;
+    private const float PanelDistance = 1.1f; // tablet-style panel spawns within reach (Boss, 2026-11-07)
 
     private sealed class Step
     {
@@ -287,6 +287,30 @@ public class KitchenGuideApp : MonoBehaviour
     // UI construction (code-built world-space canvas, Meta conventions)
     // ---------------------------------------------------------------
 
+    private static Sprite _circleSprite;
+
+    // Soft-edged filled circle for the pointer reticle (system-UI style).
+    private static Sprite CircleSprite()
+    {
+        if (_circleSprite != null) return _circleSprite;
+        const int size = 128;
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        var px = new Color32[size * size];
+        var center = new Vector2(size / 2f, size / 2f);
+        for (int y = 0; y < size; y++)
+        for (int x = 0; x < size; x++)
+        {
+            float d = Vector2.Distance(new Vector2(x, y), center);
+            float alpha = Mathf.Clamp01(size / 2f - d + 0.5f);
+            px[y * size + x] = new Color32(255, 255, 255, (byte)(alpha * 255f));
+        }
+        tex.SetPixels32(px);
+        tex.Apply();
+        _circleSprite = Sprite.Create(tex, new Rect(0, 0, size, size),
+            new Vector2(0.5f, 0.5f), 100f);
+        return _circleSprite;
+    }
+
     private static Sprite _roundedSprite;
 
     // Procedurally generated rounded-rectangle sprite (9-sliced): soft corners
@@ -355,7 +379,7 @@ public class KitchenGuideApp : MonoBehaviour
 
     // The system-UI grab bar: a slim rounded handle under a panel or chip.
     // Point at it and pinch-hold to drag its root around; release to drop.
-    private DragBar MakeGrabBar(Transform rootToMove, Vector3 localPos, TimerChip chip)
+    private DragBar MakeGrabBar(Transform rootToMove, Vector3 localPos, TimerChip chip, Vector2 size)
     {
         var go = new GameObject("GrabBar");
         go.transform.SetParent(rootToMove, false);
@@ -363,10 +387,14 @@ public class KitchenGuideApp : MonoBehaviour
         var canvas = go.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.WorldSpace;
         var rect = go.GetComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(300f, 30f);
+        rect.sizeDelta = size;
         rect.localScale = new Vector3(0.001f, 0.001f, 0.001f);
         var bg = MakeImage(rect, "BarBg", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
             new Color(0.32f, 0.36f, 0.42f, 1f));
+        // Grip dash: a lighter pill in the middle so the handle reads as one.
+        var grip = MakeImage(rect, "Grip", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f),
+            Vector2.zero, new Vector2(size.x * 0.38f, 7f), new Color(0.75f, 0.80f, 0.88f, 1f));
+        grip.GetComponent<RectTransform>().pivot = new Vector2(0.5f, 0.5f);
         var bar = new DragBar { Rect = rect, Bg = bg, Root = rootToMove, Chip = chip };
         _dragBars.Add(bar);
         return bar;
@@ -412,7 +440,7 @@ public class KitchenGuideApp : MonoBehaviour
         _canvas.renderMode = RenderMode.WorldSpace;
         _canvasRect = canvasGo.GetComponent<RectTransform>();
         _canvasRect.sizeDelta = new Vector2(1400f, 900f);
-        _canvasRect.localScale = new Vector3(0.001f, 0.001f, 0.001f);
+        _canvasRect.localScale = new Vector3(0.0005f, 0.0005f, 0.0005f); // 0.70 x 0.45 m — tablet-sized
 
         var top = new Vector2(0f, 1f); var topL = new Vector2(0f, 1f); var topR = new Vector2(1f, 1f);
         MakeImage(_canvasRect, "Bg", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
@@ -451,25 +479,24 @@ public class KitchenGuideApp : MonoBehaviour
         _timerBtn = MakeButton(_canvasRect, "Start timer", new Vector2(0f, 36f), new Vector2(370f, 104f), new Color(0.17f, 0.27f, 0.21f, 1f), StartStepTimer);
         _nextBtn = MakeButton(_canvasRect, "Next >", new Vector2(440f, 36f), new Vector2(310f, 104f), new Color(0.13f, 0.42f, 0.72f, 1f), NextStep);
 
-        // Grab bar under the panel (panel canvas is 900 units = 0.9 m tall).
-        MakeGrabBar(_panelRoot.transform, new Vector3(0f, -0.485f, 0f), null);
+        // Grab bar under the panel (panel is now 0.45 m tall at 0.0005 scale).
+        MakeGrabBar(_panelRoot.transform, new Vector3(0f, -0.26f, 0f), null, new Vector2(240f, 34f));
 
-        // Gaze reticle: a tiny UI canvas with a diamond dot — drawn with the
-        // UI shader (never stripped) instead of a primitive + Shader.Find
-        // material, which is what rendered as a magenta dot per eye.
-        var reticleCanvasGo = new GameObject("GazeReticle");
+        // Pointer reticle: a small semi-transparent circle, system-UI style —
+        // drawn with the UI shader (never stripped) on its own tiny canvas.
+        var reticleCanvasGo = new GameObject("PointerReticle");
         var reticleCanvas = reticleCanvasGo.AddComponent<Canvas>();
         reticleCanvas.renderMode = RenderMode.WorldSpace;
         var reticleRect = reticleCanvasGo.GetComponent<RectTransform>();
-        reticleRect.sizeDelta = new Vector2(200f, 200f);
+        reticleRect.sizeDelta = new Vector2(120f, 120f);
         reticleRect.localScale = new Vector3(0.001f, 0.001f, 0.001f);
         var dotGo = new GameObject("Dot");
         dotGo.transform.SetParent(reticleRect, false);
         var dotRt = dotGo.AddComponent<RectTransform>();
-        dotRt.sizeDelta = new Vector2(52f, 52f);
-        dotRt.localRotation = Quaternion.Euler(0f, 0f, 45f);
+        dotRt.sizeDelta = new Vector2(15f, 15f);
         _reticleImg = dotGo.AddComponent<Image>();
-        _reticleImg.color = Color.white;
+        _reticleImg.sprite = CircleSprite();
+        _reticleImg.color = new Color(1f, 1f, 1f, 0.8f);
         _reticleImg.raycastTarget = false;
         _reticle = reticleCanvasGo;
 
@@ -564,7 +591,7 @@ public class KitchenGuideApp : MonoBehaviour
             Root = root, Rect = rect, Bg = bg, TimeText = timeT,
             Remaining = seconds, Done = false
         };
-        chip.Bar = MakeGrabBar(root.transform, new Vector3(0f, -0.185f, 0f), chip);
+        chip.Bar = MakeGrabBar(root.transform, new Vector3(0f, -0.185f, 0f), chip, new Vector2(380f, 44f));
         _timers.Add(chip);
         AnchorChip(chip);
     }
@@ -714,12 +741,16 @@ public class KitchenGuideApp : MonoBehaviour
         {
             if (pointerPinch)
             {
-                Vector3 hit = pointerRay.GetPoint(_dragDistance);
-                _dragging.Root.position = hit + _dragOffset;
+                // Damped follow: glide toward the pointer point instead of
+                // snapping to it — the system-UI smoothness Boss asked for.
+                Vector3 target = pointerRay.GetPoint(_dragDistance) + _dragOffset;
+                float k = 1f - Mathf.Exp(-18f * Time.deltaTime);
+                _dragging.Root.position = Vector3.Lerp(_dragging.Root.position, target, k);
                 var away = _dragging.Root.position - _cam.transform.position;
                 away.y = 0f;
                 if (away.sqrMagnitude > 0.001f)
-                    _dragging.Root.rotation = Quaternion.LookRotation(away.normalized);
+                    _dragging.Root.rotation = Quaternion.Slerp(_dragging.Root.rotation,
+                        Quaternion.LookRotation(away.normalized), k);
             }
             else
             {
@@ -773,7 +804,7 @@ public class KitchenGuideApp : MonoBehaviour
         _reticle.transform.rotation = Quaternion.LookRotation(
             _reticle.transform.position - _cam.transform.position);
         _reticleImg.color = (_hovered != null || hoveredChip != null || hoveredBar != null || _dragging != null)
-            ? new Color(0.45f, 1f, 0.6f) : Color.white;
+            ? new Color(0.45f, 1f, 0.6f, 0.9f) : new Color(1f, 1f, 1f, 0.8f);
 
         // --- Pinch: pointer hand selects/drag; any hand can summon ---
         if (pointerPinch && !_pinchWas)
