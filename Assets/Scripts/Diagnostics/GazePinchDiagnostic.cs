@@ -4,7 +4,7 @@
 // feedback lives on the target, per the project's no-hand-models design rule.
 //
 // Self-bootstrapping via RuntimeInitializeOnLoadMethod: needs NO scene wiring.
-// Spawns a panel 2 m ahead of the user's head once tracking reports a settled,
+// Spawns a panel 1.5 m ahead of the user's head once tracking reports a settled,
 // plausible head pose (v2 — v1 placed it at Start from an unconverged pose and
 // it landed on the floor). Placement law: eye height, yaw-flattened forward.
 // A long pinch (>= 0.8 s) started while NOT gazing at the panel SUMMONS it:
@@ -60,6 +60,7 @@ public class GazePinchDiagnostic : MonoBehaviour
     private float _pinchStartTime;
     private bool _pinchFromPanel;
     private bool _summonFired;
+    private float _sweepTimer;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void Bootstrap()
@@ -81,6 +82,9 @@ public class GazePinchDiagnostic : MonoBehaviour
 
         FindHands();
         _bootTime = Time.time;
+        // If the user recenters the OS view, the tracking frame rotates under
+        // world-locked content — re-place the panel in front of the new forward.
+        OVRManager.display.RecenteredPose += OnRecenteredPose;
         Debug.Log(Tag + " waiting for a stable head pose before placing the panel...");
     }
 
@@ -116,7 +120,12 @@ public class GazePinchDiagnostic : MonoBehaviour
         int hidden = 0;
         foreach (var r in hand.GetComponentsInChildren<Renderer>(true))
         {
-            if (r.enabled) { r.enabled = false; hidden++; }
+            // Unconditional: OVRMesh enables its renderer when the mesh loads,
+            // which can be AFTER a one-time sweep — v2's sweep only caught
+            // renderers already enabled at Start and the hands showed anyway.
+            // This sweep now repeats on a timer (see Update).
+            if (r.enabled) hidden++;
+            r.enabled = false;
         }
         if (hidden > 0)
             Debug.Log(Tag + " hid " + hidden + " hand-mesh renderer(s) on " + hand.name);
@@ -133,7 +142,8 @@ public class GazePinchDiagnostic : MonoBehaviour
     }
 
     // Placement law (Boss's call, 2026-11-07): menus spawn from the user's ACTUAL
-    // head pose — eye height, 2 m ahead, yaw-flattened so panels stay upright.
+    // head pose — eye height, 1.5 m ahead, yaw-flattened so panels stay upright.
+    // (2 m read as "about 8 feet" in-headset — too far for a working panel.)
     // Creates the test objects on first call; repositions them on later calls.
     private void PlacePanel()
     {
@@ -143,7 +153,7 @@ public class GazePinchDiagnostic : MonoBehaviour
             flatFwd = Vector3.ProjectOnPlane(_cam.transform.right, Vector3.up);
         flatFwd.Normalize();
         Quaternion rot = Quaternion.LookRotation(flatFwd, Vector3.up);
-        Vector3 panelPos = headPos + flatFwd * 2.0f;
+        Vector3 panelPos = headPos + flatFwd * 1.5f;
         Vector3 right = rot * Vector3.right;
         Vector3 up = rot * Vector3.up;
 
@@ -181,6 +191,12 @@ public class GazePinchDiagnostic : MonoBehaviour
                   " (head height " + headPos.y.ToString("0.00") + " m)");
     }
 
+    private void OnRecenteredPose()
+    {
+        Debug.Log(Tag + " OS recenter detected" + (_placed ? " — panel re-placed" : ""));
+        if (_placed) PlacePanel();
+    }
+
     private GameObject MakeOrb(Vector3 pos, Material mat, string name)
     {
         var orb = GameObject.CreatePrimitive(PrimitiveType.Sphere);
@@ -214,6 +230,16 @@ public class GazePinchDiagnostic : MonoBehaviour
     private void Update()
     {
         if (_cam == null) return;
+
+        // Keep the hand meshes off: OVRMesh can enable its renderer after any
+        // single sweep, so re-apply twice a second (tiny subtrees, cheap).
+        _sweepTimer += Time.deltaTime;
+        if (_sweepTimer >= 0.5f)
+        {
+            _sweepTimer = 0f;
+            HideHandVisuals(_leftHand);
+            HideHandVisuals(_rightHand);
+        }
 
         if (!_placed)
         {
