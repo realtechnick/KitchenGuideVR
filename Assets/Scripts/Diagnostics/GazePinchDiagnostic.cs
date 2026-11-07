@@ -19,6 +19,7 @@ using UnityEngine;
 public class GazePinchDiagnostic : MonoBehaviour
 {
     private const string Tag = "[GazePinch]";
+    private const float PinchThreshold = 0.7f;
 
     private static readonly Color PanelIdle    = new Color(0.16f, 0.28f, 0.45f);
     private static readonly Color PanelHover   = new Color(0.30f, 0.52f, 0.80f);
@@ -50,7 +51,7 @@ public class GazePinchDiagnostic : MonoBehaviour
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void Bootstrap()
     {
-        if (FindFirstObjectByType<GazePinchDiagnostic>() != null) return;
+        if (FindAnyObjectByType<GazePinchDiagnostic>() != null) return;
         new GameObject("GazePinchDiagnostic").AddComponent<GazePinchDiagnostic>();
         Debug.Log(Tag + " diagnostic bootstrapped");
     }
@@ -58,14 +59,14 @@ public class GazePinchDiagnostic : MonoBehaviour
     private void Start()
     {
         _cam = Camera.main;
-        if (_cam == null) _cam = FindFirstObjectByType<Camera>();
+        if (_cam == null) _cam = FindAnyObjectByType<Camera>();
         if (_cam == null)
         {
             Debug.LogWarning(Tag + " no camera found; diagnostic idle.");
             return;
         }
 
-        var rig = FindFirstObjectByType<OVRCameraRig>();
+        var rig = FindAnyObjectByType<OVRCameraRig>();
         if (rig != null)
         {
             if (rig.leftHandAnchor != null)
@@ -75,7 +76,7 @@ public class GazePinchDiagnostic : MonoBehaviour
         }
         if (_leftHand == null || _rightHand == null)
         {
-            var hands = FindObjectsByType<OVRHand>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            var hands = FindObjectsByType<OVRHand>(FindObjectsInactive.Include);
             foreach (var h in hands)
             {
                 if (_leftHand == null) _leftHand = h;
@@ -155,7 +156,10 @@ public class GazePinchDiagnostic : MonoBehaviour
 
     private static bool HandPinching(OVRHand h)
     {
-        return h != null && h.IsTracked && h.IsFingerPinched(OVRHand.HandFinger.Index);
+        // SDK 207 note: OVRHand.IsFingerPinched no longer exists (compiler-verified
+        // 2026-11-07). GetFingerPinchStrength is the surviving API; the old
+        // IsFingerPinched was a threshold on this same value — derive it here.
+        return h != null && h.IsTracked && PinchStrength(h) >= PinchThreshold;
     }
 
     private void Update()
