@@ -10,7 +10,7 @@
 // A long pinch (>= 0.8 s) started while NOT gazing at the panel SUMMONS it:
 // the panel re-places in front of the current head pose. Hands are neither
 // drawn nor hidden: the hand mesh renders depth-only, so the user's real
-// hand occludes virtual content organically (see ApplyHandOcclusion).
+// hand occludes virtual content organically (see EnforceHandVisuals).
 //   LEFT orb  = left hand tracked (cyan) / not tracked (grey) / no OVRHand found (red)
 //   MID  orb  = pinch state (yellow while pinching)
 //   RIGHT orb = right hand, same scheme as left
@@ -107,70 +107,66 @@ public class GazePinchDiagnostic : MonoBehaviour
                 else if (_rightHand == null && h != _leftHand) _rightHand = h;
             }
         }
-        ApplyHandOcclusion(_leftHand);
-        ApplyHandOcclusion(_rightHand);
+        _rescanTimer = 1f; // LateUpdate enforcement picks the hands up next frame
         Debug.Log(Tag + " OVRHand found: left=" + (_leftHand != null) +
                   " right=" + (_rightHand != null) + " rig=" + (rig != null));
     }
 
     // Hand occlusion (Boss's direction, 2026-11-07): don't hide the tracked
     // hands and don't draw them either — render the hand mesh into the depth
-    // buffer ONLY (HandOcclusionMaterial), so the user's REAL hand, seen via
-    // passthrough, correctly masks virtual content behind it. Organic depth
-    // instead of cartoon models — and instead of no hands at all.
-    private static void ApplyHandOcclusion(OVRHand hand)
+    // buffer ONLY (HandOcclusionMaterial, which ships in Resources), so the
+    // user's REAL hand, seen via passthrough, correctly masks virtual content
+    // behind it. Organic depth instead of cartoon models — or no hands at all.
+    //
+    // Enforcement runs in LateUpdate, AFTER the SDK's own per-frame hand
+    // updates: in SDK 207 the OVRMeshRenderer conductor builds/re-enables the
+    // skinned hand renderer when the mesh becomes ready, which is AFTER any
+    // Start-time pass — v4's one-shot swap (and v3.1's OVRMesh disable) never
+    // touched the renderer that actually draws the gloves. A LateUpdate pass
+    // has the last word before the frame renders, so there is nothing left
+    // to fight and no flicker.
+    private Material _occlusionMat;
+    private bool _occlusionWarned;
+    private float _rescanTimer;
+    private Renderer[] _leftRenderers = new Renderer[0];
+    private Renderer[] _rightRenderers = new Renderer[0];
+
+    private void EnforceHandVisuals()
     {
-        if (hand == null) return;
-        var mat = Resources.Load<Material>("HandOcclusionMaterial");
-        if (mat == null)
+        if (_leftHand == null && _rightHand == null) return;
+        if (_occlusionMat == null)
+            _occlusionMat = Resources.Load<Material>("HandOcclusionMaterial");
+
+        _rescanTimer += Time.deltaTime;
+        if (_rescanTimer >= 0.25f)
         {
-            // Material not generated yet (the Editor setup script creates it
-            // on project load) — fall back to no visuals at all.
-            DisableHandMesh(hand);
-            HideHandVisuals(hand);
-            Debug.LogWarning(Tag + " HandOcclusionMaterial missing — hands hidden instead of occluding (" + hand.name + ")");
-            return;
+            _rescanTimer = 0f;
+            if (_leftHand != null)
+                _leftRenderers = _leftHand.GetComponentsInChildren<Renderer>(true);
+            if (_rightHand != null)
+                _rightRenderers = _rightHand.GetComponentsInChildren<Renderer>(true);
         }
-        int n = 0;
-        foreach (var r in hand.GetComponentsInChildren<Renderer>(true))
-        {
-            r.sharedMaterial = mat;
-            r.enabled = true;
-            n++;
-        }
-        Debug.Log(Tag + " occlusion material applied to " + n + " renderer(s) on " + hand.name);
+        ApplyToRenderers(_leftRenderers);
+        ApplyToRenderers(_rightRenderers);
     }
 
-    // OVRMesh is visualization ONLY — tracking data lives in OVRHand/OVRSkeleton.
-    // Kill it at the source: a disabled OVRMesh never re-enables its renderer,
-    // which ends the enable-war that made the hands flash (and cost frames) in v3.
-    private static void DisableHandMesh(OVRHand hand)
+    private void ApplyToRenderers(Renderer[] renderers)
     {
-        if (hand == null) return;
-        var mesh = hand.GetComponentInChildren<OVRMesh>(true);
-        if (mesh != null && mesh.enabled)
+        foreach (var r in renderers)
         {
-            mesh.enabled = false;
-            Debug.Log(Tag + " disabled OVRMesh (visualization) on " + hand.name);
+            if (r == null) continue;
+            if (_occlusionMat != null)
+            {
+                if (r.sharedMaterial != _occlusionMat) r.sharedMaterial = _occlusionMat;
+                if (!r.enabled) r.enabled = true;
+            }
+            else if (r.enabled) r.enabled = false;
         }
-    }
-
-    // No-hand-models design rule: keep the tracking components, kill the meshes.
-    private static void HideHandVisuals(OVRHand hand)
-    {
-        if (hand == null) return;
-        int hidden = 0;
-        foreach (var r in hand.GetComponentsInChildren<Renderer>(true))
+        if (_occlusionMat == null && !_occlusionWarned && renderers.Length > 0)
         {
-            // Unconditional: OVRMesh enables its renderer when the mesh loads,
-            // which can be AFTER a one-time sweep — v2's sweep only caught
-            // renderers already enabled at Start and the hands showed anyway.
-            // This sweep now repeats on a timer (see Update).
-            if (r.enabled) hidden++;
-            r.enabled = false;
+            _occlusionWarned = true;
+            Debug.LogWarning(Tag + " HandOcclusionMaterial missing — hands hidden instead of occluding");
         }
-        if (hidden > 0)
-            Debug.Log(Tag + " hid " + hidden + " hand-mesh renderer(s) on " + hand.name);
     }
 
     private static Material MakeMat(Color c)
@@ -267,6 +263,11 @@ public class GazePinchDiagnostic : MonoBehaviour
         // 2026-11-07). GetFingerPinchStrength is the surviving API; the old
         // IsFingerPinched was a threshold on this same value — derive it here.
         return h != null && h.IsTracked && PinchStrength(h) >= PinchThreshold;
+    }
+
+    private void LateUpdate()
+    {
+        EnforceHandVisuals();
     }
 
     private void Update()
