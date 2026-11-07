@@ -76,8 +76,8 @@ public class KitchenGuideApp : MonoBehaviour
         public Image Bg;
         public Transform Root;   // what moves when this bar is dragged
         public TimerChip Chip;   // non-null when the root is a timer chip
-        public readonly Color Normal = new Color(0.32f, 0.36f, 0.42f, 1f);
-        public readonly Color Hover = new Color(0.55f, 0.62f, 0.72f, 1f);
+        public readonly Color Normal = new Color(1f, 1f, 1f, 0.35f);
+        public readonly Color Hover = new Color(1f, 1f, 1f, 0.95f);
     }
 
     private static readonly Step[] Recipe =
@@ -383,18 +383,21 @@ public class KitchenGuideApp : MonoBehaviour
     {
         var go = new GameObject("GrabBar");
         go.transform.SetParent(rootToMove, false);
-        go.transform.localPosition = localPos;
+        // Compensate for the parent's scale: the panel root is unscaled
+        // (positions in meters) but a timer chip's root IS its canvas
+        // (scale 0.001, positions in canvas units). Without this, the chip's
+        // bar rendered at 1e-6 scale — microscopically small, i.e. invisible.
+        // (That was the missing timer pill, found 2026-11-07.)
+        float ps = Mathf.Max(0.00001f, rootToMove.lossyScale.x);
+        go.transform.localPosition = localPos / ps;
+        go.transform.localScale = Vector3.one * (0.001f / ps);
         var canvas = go.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.WorldSpace;
         var rect = go.GetComponent<RectTransform>();
         rect.sizeDelta = size;
-        rect.localScale = new Vector3(0.001f, 0.001f, 0.001f);
+        // Simple white system-style bar: translucent at rest, glowing on hover.
         var bg = MakeImage(rect, "BarBg", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
-            new Color(0.32f, 0.36f, 0.42f, 1f));
-        // Grip dash: a lighter pill in the middle so the handle reads as one.
-        var grip = MakeImage(rect, "Grip", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f),
-            Vector2.zero, new Vector2(size.x * 0.38f, 7f), new Color(0.75f, 0.80f, 0.88f, 1f));
-        grip.GetComponent<RectTransform>().pivot = new Vector2(0.5f, 0.5f);
+            new Color(1f, 1f, 1f, 0.35f));
         var bar = new DragBar { Rect = rect, Bg = bg, Root = rootToMove, Chip = chip };
         _dragBars.Add(bar);
         return bar;
@@ -480,7 +483,7 @@ public class KitchenGuideApp : MonoBehaviour
         _nextBtn = MakeButton(_canvasRect, "Next >", new Vector2(440f, 36f), new Vector2(310f, 104f), new Color(0.13f, 0.42f, 0.72f, 1f), NextStep);
 
         // Grab bar under the panel (panel is now 0.45 m tall at 0.0005 scale).
-        MakeGrabBar(_panelRoot.transform, new Vector3(0f, -0.26f, 0f), null, new Vector2(240f, 34f));
+        MakeGrabBar(_panelRoot.transform, new Vector3(0f, -0.26f, 0f), null, new Vector2(140f, 12f));
 
         // Pointer reticle: a small semi-transparent circle, system-UI style —
         // drawn with the UI shader (never stripped) on its own tiny canvas.
@@ -591,7 +594,7 @@ public class KitchenGuideApp : MonoBehaviour
             Root = root, Rect = rect, Bg = bg, TimeText = timeT,
             Remaining = seconds, Done = false
         };
-        chip.Bar = MakeGrabBar(root.transform, new Vector3(0f, -0.185f, 0f), chip, new Vector2(380f, 44f));
+        chip.Bar = MakeGrabBar(root.transform, new Vector3(0f, -0.185f, 0f), chip, new Vector2(200f, 14f));
         _timers.Add(chip);
         AnchorChip(chip);
     }
@@ -824,7 +827,8 @@ public class KitchenGuideApp : MonoBehaviour
                 _timers.Remove(hoveredChip);
             }
             else if (_hovered != null) _hovered.OnClick();
-            else if (onPanel) NextStep();
+            // Pinching the panel BODY does nothing (Boss, 2026-11-07): only
+            // buttons trigger actions. The panel-drag bar is separate above.
         }
         _pinchWas = pointerPinch;
 
