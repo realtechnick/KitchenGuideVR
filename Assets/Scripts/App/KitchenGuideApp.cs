@@ -584,7 +584,18 @@ public class KitchenGuideApp : MonoBehaviour
             new Vector2(0f, -14f), new Vector2(0f, 52f), 38f, TextAlignmentOptions.Center,
             new Color(0.62f, 0.85f, 1f));
         nameT.text = label;
-        var timeT = MakeText(rect, "ChipTime", Vector2.zero, Vector2.one,
+        // The countdown text lives on its OWN child canvas: it mutates once
+        // per second, and a text change rebuilds its whole canvas — isolating
+        // it keeps that rebuild to one small element instead of hitching
+        // every surface (the 1-second stutter Boss caught, 2026-11-07).
+        var timeCanvasGo = new GameObject("TimeCanvas");
+        timeCanvasGo.transform.SetParent(rect, false);
+        var timeCanvas = timeCanvasGo.AddComponent<Canvas>();
+        timeCanvas.renderMode = RenderMode.WorldSpace;
+        var timeRect = timeCanvasGo.GetComponent<RectTransform>();
+        timeRect.sizeDelta = new Vector2(560f, 300f);
+        timeRect.localScale = Vector3.one; // chip root already carries the 0.001
+        var timeT = MakeText(timeRect, "ChipTime", Vector2.zero, Vector2.one,
             new Vector2(0f, -20f), Vector2.zero, 120f, TextAlignmentOptions.Center,
             new Color(1f, 1f, 1f), FontStyles.Bold);
         timeT.GetComponent<RectTransform>().pivot = new Vector2(0.5f, 0.5f);
@@ -691,6 +702,18 @@ public class KitchenGuideApp : MonoBehaviour
         return rect.rect.Contains(new Vector2(local.x, local.y));
     }
 
+    // Grab bars are thin (12-14 units) — too precise a target. Their hit test
+    // uses a comfort zone: generous below the bar (where the hand naturally
+    // approaches from), modest above and to the sides. Hard to miss on purpose.
+    private bool PointerOnBar(Ray ray, DragBar bar)
+    {
+        if (!PointerHitPoint(ray, bar.Rect, out Vector3 hit)) return false;
+        Vector3 local = bar.Rect.InverseTransformPoint(hit);
+        Rect r = bar.Rect.rect;
+        return local.x >= r.xMin - 35f && local.x <= r.xMax + 35f
+            && local.y >= r.yMin - 120f && local.y <= r.yMax + 40f;
+    }
+
     private void Update()
     {
         if (_cam == null) return;
@@ -771,7 +794,7 @@ public class KitchenGuideApp : MonoBehaviour
         if (hasRay && _dragging == null)
         {
             foreach (var bar in _dragBars)
-                if (bar.Rect.gameObject.activeInHierarchy && PointerOn(pointerRay, bar.Rect)) { hoveredBar = bar; break; }
+                if (bar.Rect.gameObject.activeInHierarchy && PointerOnBar(pointerRay, bar)) { hoveredBar = bar; break; }
             if (hoveredBar == null)
             {
                 foreach (var chip in _timers)
