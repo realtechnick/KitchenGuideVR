@@ -8,8 +8,9 @@
 // plausible head pose (v2 — v1 placed it at Start from an unconverged pose and
 // it landed on the floor). Placement law: eye height, yaw-flattened forward.
 // A long pinch (>= 0.8 s) started while NOT gazing at the panel SUMMONS it:
-// the panel re-places in front of the current head pose. Hand-mesh renderers
-// under any OVRHand are disabled from code (tracking yes, virtual hands no).
+// the panel re-places in front of the current head pose. Hands are neither
+// drawn nor hidden: the hand mesh renders depth-only, so the user's real
+// hand occludes virtual content organically (see ApplyHandOcclusion).
 //   LEFT orb  = left hand tracked (cyan) / not tracked (grey) / no OVRHand found (red)
 //   MID  orb  = pinch state (yellow while pinching)
 //   RIGHT orb = right hand, same scheme as left
@@ -60,7 +61,6 @@ public class GazePinchDiagnostic : MonoBehaviour
     private float _pinchStartTime;
     private bool _pinchFromPanel;
     private bool _summonFired;
-    private float _sweepTimer;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void Bootstrap()
@@ -107,12 +107,38 @@ public class GazePinchDiagnostic : MonoBehaviour
                 else if (_rightHand == null && h != _leftHand) _rightHand = h;
             }
         }
-        DisableHandMesh(_leftHand);
-        DisableHandMesh(_rightHand);
-        HideHandVisuals(_leftHand);
-        HideHandVisuals(_rightHand);
+        ApplyHandOcclusion(_leftHand);
+        ApplyHandOcclusion(_rightHand);
         Debug.Log(Tag + " OVRHand found: left=" + (_leftHand != null) +
                   " right=" + (_rightHand != null) + " rig=" + (rig != null));
+    }
+
+    // Hand occlusion (Boss's direction, 2026-11-07): don't hide the tracked
+    // hands and don't draw them either — render the hand mesh into the depth
+    // buffer ONLY (HandOcclusionMaterial), so the user's REAL hand, seen via
+    // passthrough, correctly masks virtual content behind it. Organic depth
+    // instead of cartoon models — and instead of no hands at all.
+    private static void ApplyHandOcclusion(OVRHand hand)
+    {
+        if (hand == null) return;
+        var mat = Resources.Load<Material>("HandOcclusionMaterial");
+        if (mat == null)
+        {
+            // Material not generated yet (the Editor setup script creates it
+            // on project load) — fall back to no visuals at all.
+            DisableHandMesh(hand);
+            HideHandVisuals(hand);
+            Debug.LogWarning(Tag + " HandOcclusionMaterial missing — hands hidden instead of occluding (" + hand.name + ")");
+            return;
+        }
+        int n = 0;
+        foreach (var r in hand.GetComponentsInChildren<Renderer>(true))
+        {
+            r.sharedMaterial = mat;
+            r.enabled = true;
+            n++;
+        }
+        Debug.Log(Tag + " occlusion material applied to " + n + " renderer(s) on " + hand.name);
     }
 
     // OVRMesh is visualization ONLY — tracking data lives in OVRHand/OVRSkeleton.
@@ -246,16 +272,6 @@ public class GazePinchDiagnostic : MonoBehaviour
     private void Update()
     {
         if (_cam == null) return;
-
-        // Keep the hand meshes off: OVRMesh can enable its renderer after any
-        // single sweep, so re-apply twice a second (tiny subtrees, cheap).
-        _sweepTimer += Time.deltaTime;
-        if (_sweepTimer >= 0.5f)
-        {
-            _sweepTimer = 0f;
-            HideHandVisuals(_leftHand);
-            HideHandVisuals(_rightHand);
-        }
 
         if (!_placed)
         {
