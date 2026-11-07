@@ -49,7 +49,7 @@ public class KitchenGuideApp : MonoBehaviour
         public Image Bg;
         public TextMeshProUGUI Label;
         public Action OnClick;
-        public readonly Color Normal = new Color(0.18f, 0.24f, 0.32f, 1f);
+        public Color Normal = new Color(0.18f, 0.24f, 0.32f, 1f);
         public readonly Color Hover = new Color(0.30f, 0.52f, 0.80f, 1f);
     }
 
@@ -117,7 +117,7 @@ public class KitchenGuideApp : MonoBehaviour
     private readonly List<AppButton> _buttons = new List<AppButton>();
     private AppButton _hovered;
     private GameObject _reticle;
-    private Material _reticleMat;
+    private Image _reticleImg;
     private readonly List<TimerChip> _timers = new List<TimerChip>();
     private int _stepIndex;
     private int _lastSeenCount = -1;
@@ -265,14 +265,33 @@ public class KitchenGuideApp : MonoBehaviour
     // UI construction (code-built world-space canvas, Meta conventions)
     // ---------------------------------------------------------------
 
-    private static Material MakeMat(Color c)
+    private static Sprite _roundedSprite;
+
+    // Procedurally generated rounded-rectangle sprite (9-sliced): soft corners
+    // on every panel and button without needing art assets — all app surfaces
+    // draw through it via MakeImage.
+    private static Sprite RoundedSprite()
     {
-        var sh = Shader.Find("Universal Render Pipeline/Unlit");
-        if (sh == null) sh = Shader.Find("Unlit/Color");
-        var m = new Material(sh);
-        if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", c);
-        m.color = c;
-        return m;
+        if (_roundedSprite != null) return _roundedSprite;
+        const int size = 128, radius = 30;
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        var px = new Color32[size * size];
+        for (int y = 0; y < size; y++)
+        for (int x = 0; x < size; x++)
+        {
+            var p = new Vector2(x, y);
+            var c = new Vector2(
+                Mathf.Clamp(p.x, radius, size - 1 - radius),
+                Mathf.Clamp(p.y, radius, size - 1 - radius));
+            float alpha = Mathf.Clamp01(radius - Vector2.Distance(p, c) + 0.5f);
+            px[y * size + x] = new Color32(255, 255, 255, (byte)(alpha * 255f));
+        }
+        tex.SetPixels32(px);
+        tex.Apply();
+        _roundedSprite = Sprite.Create(tex, new Rect(0, 0, size, size),
+            new Vector2(0.5f, 0.5f), 100f, 0, SpriteMeshType.FullRect,
+            new Vector4(radius, radius, radius, radius));
+        return _roundedSprite;
     }
 
     private static TextMeshProUGUI MakeText(Transform parent, string name,
@@ -306,21 +325,23 @@ public class KitchenGuideApp : MonoBehaviour
         rt.anchoredPosition = pos; rt.sizeDelta = size;
         var img = go.AddComponent<Image>();
         img.color = color;
+        img.sprite = RoundedSprite();
+        img.type = Image.Type.Sliced;
         img.raycastTarget = false;
         return img;
     }
 
-    private AppButton MakeButton(Transform parent, string label, Vector2 pos, Vector2 size, Action onClick)
+    private AppButton MakeButton(Transform parent, string label, Vector2 pos, Vector2 size, Color normal, Action onClick)
     {
         var bg = MakeImage(parent, "Btn_" + label, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f),
-            pos, size, new Color(0.18f, 0.24f, 0.32f, 1f));
+            pos, size, normal);
         var t = MakeText(bg.transform, "Label", Vector2.zero, Vector2.one,
             Vector2.zero, Vector2.zero, 46f, TextAlignmentOptions.Center,
             new Color(0.95f, 0.96f, 0.98f));
         t.text = label;
         var rt = bg.GetComponent<RectTransform>();
         rt.pivot = new Vector2(0.5f, 0f);
-        var btn = new AppButton { Rect = rt, Bg = bg, Label = t, OnClick = onClick };
+        var btn = new AppButton { Rect = rt, Bg = bg, Label = t, Normal = normal, OnClick = onClick };
         _buttons.Add(btn);
         return btn;
     }
@@ -359,6 +380,7 @@ public class KitchenGuideApp : MonoBehaviour
         _stepBodyText = MakeText(_canvasRect, "StepBody", topL, topR, new Vector2(50f, -292f),
             new Vector2(-100f, 330f), 44f, TextAlignmentOptions.TopLeft,
             new Color(0.90f, 0.92f, 0.95f));
+        _stepBodyText.lineSpacing = 12f;
 
         // Detection hint chip (visible on detect steps)
         var chipImg = MakeImage(_canvasRect, "HintChip", new Vector2(0f, 0f), new Vector2(1f, 0f),
@@ -368,17 +390,28 @@ public class KitchenGuideApp : MonoBehaviour
             Vector2.zero, Vector2.zero, 38f, TextAlignmentOptions.Center, new Color(0.75f, 1f, 0.85f));
         _hintText.GetComponent<RectTransform>().pivot = new Vector2(0.5f, 0.5f);
 
-        _backBtn = MakeButton(_canvasRect, "< Back", new Vector2(-440f, 36f), new Vector2(310f, 104f), PrevStep);
-        _timerBtn = MakeButton(_canvasRect, "Start timer", new Vector2(0f, 36f), new Vector2(370f, 104f), StartStepTimer);
-        _nextBtn = MakeButton(_canvasRect, "Next >", new Vector2(440f, 36f), new Vector2(310f, 104f), NextStep);
+        _backBtn = MakeButton(_canvasRect, "< Back", new Vector2(-440f, 36f), new Vector2(310f, 104f), new Color(0.16f, 0.19f, 0.24f, 1f), PrevStep);
+        _timerBtn = MakeButton(_canvasRect, "Start timer", new Vector2(0f, 36f), new Vector2(370f, 104f), new Color(0.17f, 0.27f, 0.21f, 1f), StartStepTimer);
+        _nextBtn = MakeButton(_canvasRect, "Next >", new Vector2(440f, 36f), new Vector2(310f, 104f), new Color(0.13f, 0.42f, 0.72f, 1f), NextStep);
 
-        // Gaze reticle
-        _reticle = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        _reticle.name = "GazeReticle";
-        Destroy(_reticle.GetComponent<Collider>());
-        _reticle.transform.localScale = new Vector3(0.014f, 0.014f, 0.014f);
-        _reticleMat = MakeMat(new Color(1f, 1f, 1f));
-        _reticle.GetComponent<Renderer>().sharedMaterial = _reticleMat;
+        // Gaze reticle: a tiny UI canvas with a diamond dot — drawn with the
+        // UI shader (never stripped) instead of a primitive + Shader.Find
+        // material, which is what rendered as a magenta dot per eye.
+        var reticleCanvasGo = new GameObject("GazeReticle");
+        var reticleCanvas = reticleCanvasGo.AddComponent<Canvas>();
+        reticleCanvas.renderMode = RenderMode.WorldSpace;
+        var reticleRect = reticleCanvasGo.GetComponent<RectTransform>();
+        reticleRect.sizeDelta = new Vector2(200f, 200f);
+        reticleRect.localScale = new Vector3(0.001f, 0.001f, 0.001f);
+        var dotGo = new GameObject("Dot");
+        dotGo.transform.SetParent(reticleRect, false);
+        var dotRt = dotGo.AddComponent<RectTransform>();
+        dotRt.sizeDelta = new Vector2(52f, 52f);
+        dotRt.localRotation = Quaternion.Euler(0f, 0f, 45f);
+        _reticleImg = dotGo.AddComponent<Image>();
+        _reticleImg.color = Color.white;
+        _reticleImg.raycastTarget = false;
+        _reticle = reticleCanvasGo;
 
         _panelRoot.SetActive(false); // until placed
     }
@@ -518,21 +551,26 @@ public class KitchenGuideApp : MonoBehaviour
         _placed = true;
     }
 
-    private bool RayHitsRect(RectTransform rect, out Vector2 screenPt)
+    // Pure 3D hit-testing: intersect the gaze ray with the rect's plane, then
+    // test in the rect's LOCAL space. (The first version round-tripped through
+    // screen points — WorldToScreenPoint/RectangleContainsScreenPoint are
+    // unreliable against a stereo XR camera, which is why the buttons never
+    // registered hover or pinch.)
+    private bool GazeHitPoint(RectTransform rect, out Vector3 point)
     {
-        screenPt = Vector2.zero;
+        point = Vector3.zero;
         var ray = new Ray(_cam.transform.position, _cam.transform.forward);
         var plane = new Plane(-rect.transform.forward, rect.transform.position);
         if (!plane.Raycast(ray, out float d) || d <= 0f) return false;
-        Vector3 hit = ray.GetPoint(d);
-        screenPt = RectTransformUtility.WorldToScreenPoint(_cam, hit);
+        point = ray.GetPoint(d);
         return true;
     }
 
     private bool GazeOn(RectTransform rect)
     {
-        return RayHitsRect(rect, out Vector2 sp)
-            && RectTransformUtility.RectangleContainsScreenPoint(rect, sp, _cam);
+        if (!GazeHitPoint(rect, out Vector3 hit)) return false;
+        Vector3 local = rect.InverseTransformPoint(hit);
+        return rect.rect.Contains(new Vector2(local.x, local.y));
     }
 
     private void Update()
@@ -599,19 +637,15 @@ public class KitchenGuideApp : MonoBehaviour
         }
 
         // Reticle: on the targeted surface, else floating ahead
-        if (RayHitsRect(hoveredChip != null ? hoveredChip.Rect : _canvasRect, out _))
-        {
-            var ray = new Ray(_cam.transform.position, _cam.transform.forward);
-            var rect = hoveredChip != null ? hoveredChip.Rect : _canvasRect;
-            var plane = new Plane(-rect.transform.forward, rect.transform.position);
-            if (plane.Raycast(ray, out float d))
-                _reticle.transform.position = ray.GetPoint(d) - rect.transform.forward * 0.012f;
-        }
+        var targetRect = hoveredChip != null ? hoveredChip.Rect : _canvasRect;
+        if (GazeHitPoint(targetRect, out Vector3 hitPoint))
+            _reticle.transform.position = hitPoint - targetRect.transform.forward * 0.012f;
         else
-        {
             _reticle.transform.position = _cam.transform.position + _cam.transform.forward * 2.5f;
-        }
-        _reticleMat.color = (_hovered != null || hoveredChip != null) ? new Color(0.45f, 1f, 0.6f) : Color.white;
+        _reticle.transform.rotation = Quaternion.LookRotation(
+            _reticle.transform.position - _cam.transform.position);
+        _reticleImg.color = (_hovered != null || hoveredChip != null)
+            ? new Color(0.45f, 1f, 0.6f) : Color.white;
 
         // --- Pinch ---
         bool pinch = AnyPinch();
