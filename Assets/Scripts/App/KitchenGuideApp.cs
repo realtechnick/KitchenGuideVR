@@ -6,6 +6,11 @@
 // enforcement) carrying a real cooking UI:
 //   * world-space canvas panel per Meta's Quest UI conventions
 //     (scale 0.001, TMP text, generous targets)
+//   * SYSTEM-UI interaction model (Boss's direction, 2026-11-07): a hand
+//     pointer ray (OVRHand.PointerPose) with a small reticle, pinch to
+//     select, and a grab bar under every panel/chip for smooth dragging.
+//     Head pose only decides where panels SPAWN. Timer chips additionally
+//     carry (unsaved) spatial anchors so they stay locked over appliances.
 //   * a recipe step engine (Back / Next, pinch panel = Next)
 //   * detection-aware steps (auto-advance when DetectionManager reports
 //     the step's ingredient via CounterState — Step B wiring)
@@ -59,9 +64,20 @@ public class KitchenGuideApp : MonoBehaviour
         public RectTransform Rect;
         public Image Bg;
         public TextMeshProUGUI TimeText;
+        public DragBar Bar;
         public float Remaining;
         public bool Done;
         public int LastShownSecond = -1;
+    }
+
+    private sealed class DragBar
+    {
+        public RectTransform Rect;
+        public Image Bg;
+        public Transform Root;   // what moves when this bar is dragged
+        public TimerChip Chip;   // non-null when the root is a timer chip
+        public readonly Color Normal = new Color(0.32f, 0.36f, 0.42f, 1f);
+        public readonly Color Hover = new Color(0.55f, 0.62f, 0.72f, 1f);
     }
 
     private static readonly Step[] Recipe =
@@ -116,6 +132,12 @@ public class KitchenGuideApp : MonoBehaviour
     private AppButton _backBtn, _nextBtn, _timerBtn;
     private readonly List<AppButton> _buttons = new List<AppButton>();
     private AppButton _hovered;
+    private readonly List<DragBar> _dragBars = new List<DragBar>();
+    private DragBar _dragging;
+    private float _dragDistance;
+    private Vector3 _dragOffset;
+    private bool _anyPinchWas;
+    private OVRHand _activeHand;
     private GameObject _reticle;
     private Image _reticleImg;
     private readonly List<TimerChip> _timers = new List<TimerChip>();
@@ -331,6 +353,41 @@ public class KitchenGuideApp : MonoBehaviour
         return img;
     }
 
+    // The system-UI grab bar: a slim rounded handle under a panel or chip.
+    // Point at it and pinch-hold to drag its root around; release to drop.
+    private DragBar MakeGrabBar(Transform rootToMove, Vector3 localPos, TimerChip chip)
+    {
+        var go = new GameObject("GrabBar");
+        go.transform.SetParent(rootToMove, false);
+        go.transform.localPosition = localPos;
+        var canvas = go.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.WorldSpace;
+        var rect = go.GetComponent<RectTransform>();
+        rect.sizeDelta = new Vector2(300f, 30f);
+        rect.localScale = new Vector3(0.001f, 0.001f, 0.001f);
+        var bg = MakeImage(rect, "BarBg", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
+            new Color(0.32f, 0.36f, 0.42f, 1f));
+        var bar = new DragBar { Rect = rect, Bg = bg, Root = rootToMove, Chip = chip };
+        _dragBars.Add(bar);
+        return bar;
+    }
+
+    // Timer chips get spatial anchors so they stay locked to the world (over
+    // the stove, say) through tracking relocalization and long looks away.
+    // Unsaved, in-session anchors only — anchor SAVING is deliberately not
+    // attempted (the save-failure loop is the sideload trap from recon).
+    private static void AnchorChip(TimerChip chip)
+    {
+        if (chip.Root.GetComponent<OVRSpatialAnchor>() == null)
+            chip.Root.AddComponent<OVRSpatialAnchor>();
+    }
+
+    private static void UnanchorChip(TimerChip chip)
+    {
+        var a = chip.Root.GetComponent<OVRSpatialAnchor>();
+        if (a != null) Destroy(a);
+    }
+
     private AppButton MakeButton(Transform parent, string label, Vector2 pos, Vector2 size, Color normal, Action onClick)
     {
         var bg = MakeImage(parent, "Btn_" + label, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f),
@@ -393,6 +450,9 @@ public class KitchenGuideApp : MonoBehaviour
         _backBtn = MakeButton(_canvasRect, "< Back", new Vector2(-440f, 36f), new Vector2(310f, 104f), new Color(0.16f, 0.19f, 0.24f, 1f), PrevStep);
         _timerBtn = MakeButton(_canvasRect, "Start timer", new Vector2(0f, 36f), new Vector2(370f, 104f), new Color(0.17f, 0.27f, 0.21f, 1f), StartStepTimer);
         _nextBtn = MakeButton(_canvasRect, "Next >", new Vector2(440f, 36f), new Vector2(310f, 104f), new Color(0.13f, 0.42f, 0.72f, 1f), NextStep);
+
+        // Grab bar under the panel (panel canvas is 900 units = 0.9 m tall).
+        MakeGrabBar(_panelRoot.transform, new Vector3(0f, -0.485f, 0f), null);
 
         // Gaze reticle: a tiny UI canvas with a diamond dot — drawn with the
         // UI shader (never stripped) instead of a primitive + Shader.Find
@@ -499,11 +559,14 @@ public class KitchenGuideApp : MonoBehaviour
             new Color(1f, 1f, 1f), FontStyles.Bold);
         timeT.GetComponent<RectTransform>().pivot = new Vector2(0.5f, 0.5f);
 
-        _timers.Add(new TimerChip
+        var chip = new TimerChip
         {
             Root = root, Rect = rect, Bg = bg, TimeText = timeT,
             Remaining = seconds, Done = false
-        });
+        };
+        chip.Bar = MakeGrabBar(root.transform, new Vector3(0f, -0.185f, 0f), chip);
+        _timers.Add(chip);
+        AnchorChip(chip);
     }
 
     private void UpdateTimers(float dt)
@@ -551,24 +614,49 @@ public class KitchenGuideApp : MonoBehaviour
         _placed = true;
     }
 
-    // Pure 3D hit-testing: intersect the gaze ray with the rect's plane, then
-    // test in the rect's LOCAL space. (The first version round-tripped through
-    // screen points — WorldToScreenPoint/RectangleContainsScreenPoint are
-    // unreliable against a stereo XR camera, which is why the buttons never
-    // registered hover or pinch.)
-    private bool GazeHitPoint(RectTransform rect, out Vector3 point)
+    // Hand pointer (Boss's direction, 2026-11-07): the system-UI model — a ray
+    // cast from the pointing hand (OVRHand.PointerPose), a small reticle where
+    // it lands, pinch to select, drag by the grab bar. Head-gaze pointing is
+    // retired; head pose now only decides where panels spawn.
+    private bool HandPinching(OVRHand h)
+    {
+        return h != null && h.IsTracked && PinchStrength(h) >= PinchThreshold;
+    }
+
+    private bool TryGetPointerRay(out Ray ray)
+    {
+        ray = default;
+        if (_activeHand == null || !_activeHand.IsTracked)
+        {
+            _activeHand = null;
+            foreach (var h in _hands)
+                if (h != null && h.IsTracked) { _activeHand = h; break; }
+        }
+        // A pinch from the other hand hands the pointer over to it.
+        foreach (var h in _hands)
+            if (h != null && h != _activeHand && HandPinching(h))
+                _activeHand = h;
+        if (_activeHand == null) return false;
+        var pose = _activeHand.PointerPose;
+        ray = new Ray(pose.position, pose.rotation * Vector3.forward);
+        return true;
+    }
+
+    // Pure 3D hit-testing against the pointer ray: intersect the rect's plane,
+    // then test in the rect's LOCAL space. (Screen-point round-trips are
+    // unreliable against a stereo XR camera — that was the dead-buttons bug.)
+    private bool PointerHitPoint(Ray ray, RectTransform rect, out Vector3 point)
     {
         point = Vector3.zero;
-        var ray = new Ray(_cam.transform.position, _cam.transform.forward);
         var plane = new Plane(-rect.transform.forward, rect.transform.position);
         if (!plane.Raycast(ray, out float d) || d <= 0f) return false;
         point = ray.GetPoint(d);
         return true;
     }
 
-    private bool GazeOn(RectTransform rect)
+    private bool PointerOn(Ray ray, RectTransform rect)
     {
-        if (!GazeHitPoint(rect, out Vector3 hit)) return false;
+        if (!PointerHitPoint(ray, rect, out Vector3 hit)) return false;
         Vector3 local = rect.InverseTransformPoint(hit);
         return rect.rect.Contains(new Vector2(local.x, local.y));
     }
@@ -617,17 +705,51 @@ public class KitchenGuideApp : MonoBehaviour
         }
         else _detectSatisfiedFor = 0f;
 
-        // --- Gaze targeting ---
+        // --- Hand-pointer targeting ---
+        bool hasRay = TryGetPointerRay(out Ray pointerRay);
+        bool pointerPinch = hasRay && HandPinching(_activeHand);
+
+        // Drag in progress: the panel/chip follows the pointer at grab range.
+        if (_dragging != null)
+        {
+            if (pointerPinch)
+            {
+                Vector3 hit = pointerRay.GetPoint(_dragDistance);
+                _dragging.Root.position = hit + _dragOffset;
+                var away = _dragging.Root.position - _cam.transform.position;
+                away.y = 0f;
+                if (away.sqrMagnitude > 0.001f)
+                    _dragging.Root.rotation = Quaternion.LookRotation(away.normalized);
+            }
+            else
+            {
+                // Released: settle. Timer chips re-anchor where they landed.
+                if (_dragging.Chip != null) AnchorChip(_dragging.Chip);
+                _dragging.Bg.color = _dragging.Normal;
+                _dragging = null;
+            }
+        }
+
+        DragBar hoveredBar = null;
         TimerChip hoveredChip = null;
-        foreach (var chip in _timers)
-            if (GazeOn(chip.Rect)) { hoveredChip = chip; break; }
-
         AppButton newHover = null;
-        if (hoveredChip == null)
-            foreach (var b in _buttons)
-                if (b.Rect.gameObject.activeInHierarchy && GazeOn(b.Rect)) { newHover = b; break; }
-
-        bool onPanel = hoveredChip == null && newHover == null && GazeOn(_canvasRect);
+        bool onPanel = false;
+        if (hasRay && _dragging == null)
+        {
+            foreach (var bar in _dragBars)
+                if (bar.Rect.gameObject.activeInHierarchy && PointerOn(pointerRay, bar.Rect)) { hoveredBar = bar; break; }
+            if (hoveredBar == null)
+            {
+                foreach (var chip in _timers)
+                    if (PointerOn(pointerRay, chip.Rect)) { hoveredChip = chip; break; }
+                if (hoveredChip == null)
+                {
+                    foreach (var b in _buttons)
+                        if (b.Rect.gameObject.activeInHierarchy && PointerOn(pointerRay, b.Rect)) { newHover = b; break; }
+                    if (newHover == null) onPanel = PointerOn(pointerRay, _canvasRect);
+                }
+            }
+        }
 
         if (newHover != _hovered)
         {
@@ -635,39 +757,60 @@ public class KitchenGuideApp : MonoBehaviour
             _hovered = newHover;
             if (_hovered != null) _hovered.Bg.color = _hovered.Hover;
         }
+        foreach (var bar in _dragBars)
+            if (bar != _dragging)
+                bar.Bg.color = bar == hoveredBar ? bar.Hover : bar.Normal;
 
-        // Reticle: on the targeted surface, else floating ahead
-        var targetRect = hoveredChip != null ? hoveredChip.Rect : _canvasRect;
-        if (GazeHitPoint(targetRect, out Vector3 hitPoint))
-            _reticle.transform.position = hitPoint - targetRect.transform.forward * 0.012f;
+        // Reticle: the pointer's landing spot (system-UI style), else mid-ray
+        var reticleTarget = hoveredBar != null ? hoveredBar.Rect
+            : hoveredChip != null ? hoveredChip.Rect : _canvasRect;
+        if (hasRay && PointerHitPoint(pointerRay, reticleTarget, out Vector3 pHit))
+            _reticle.transform.position = pHit - reticleTarget.transform.forward * 0.012f;
+        else if (hasRay)
+            _reticle.transform.position = pointerRay.GetPoint(2.5f);
         else
             _reticle.transform.position = _cam.transform.position + _cam.transform.forward * 2.5f;
         _reticle.transform.rotation = Quaternion.LookRotation(
             _reticle.transform.position - _cam.transform.position);
-        _reticleImg.color = (_hovered != null || hoveredChip != null)
+        _reticleImg.color = (_hovered != null || hoveredChip != null || hoveredBar != null || _dragging != null)
             ? new Color(0.45f, 1f, 0.6f) : Color.white;
 
-        // --- Pinch ---
-        bool pinch = AnyPinch();
-        if (pinch && !_pinchWas)
+        // --- Pinch: pointer hand selects/drag; any hand can summon ---
+        if (pointerPinch && !_pinchWas)
         {
-            _pinchStartTime = Time.time;
-            _pinchFromPanel = _hovered != null || onPanel || hoveredChip != null;
-            _summonFired = false;
-            if (hoveredChip != null && hoveredChip.Done)
+            if (hoveredBar != null && PointerHitPoint(pointerRay, hoveredBar.Rect, out Vector3 grabHit))
             {
+                _dragging = hoveredBar;
+                _dragging.Bg.color = _dragging.Hover;
+                _dragDistance = Vector3.Distance(pointerRay.origin, grabHit);
+                _dragOffset = _dragging.Root.position - grabHit;
+                if (_dragging.Chip != null) UnanchorChip(_dragging.Chip);
+            }
+            else if (hoveredChip != null && hoveredChip.Done)
+            {
+                if (hoveredChip.Bar != null) _dragBars.Remove(hoveredChip.Bar);
                 Destroy(hoveredChip.Root);
                 _timers.Remove(hoveredChip);
             }
             else if (_hovered != null) _hovered.OnClick();
             else if (onPanel) NextStep();
         }
-        if (pinch && !_pinchFromPanel && !_summonFired
+        _pinchWas = pointerPinch;
+
+        bool anyPinch = AnyPinch();
+        if (anyPinch && !_anyPinchWas)
+        {
+            _pinchStartTime = Time.time;
+            _pinchFromPanel = _hovered != null || onPanel || hoveredChip != null
+                || hoveredBar != null || _dragging != null;
+            _summonFired = false;
+        }
+        if (anyPinch && !_pinchFromPanel && !_summonFired
             && Time.time - _pinchStartTime >= SummonSeconds)
         {
             PlacePanel();
             _summonFired = true;
         }
-        _pinchWas = pinch;
+        _anyPinchWas = anyPinch;
     }
 }
