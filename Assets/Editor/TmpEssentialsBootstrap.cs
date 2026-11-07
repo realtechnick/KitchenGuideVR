@@ -29,7 +29,8 @@ public static class TmpEssentialsBootstrap
 
         if (AssetDatabase.FindAssets("t:TMP_Settings").Length > 0) return;
 
-        PackageInfo info = PackageInfo.FindForAssetPath("Packages/com.unity.ugui");
+        UnityEditor.PackageManager.PackageInfo info =
+            UnityEditor.PackageManager.PackageInfo.FindForAssetPath("Packages/com.unity.ugui");
         if (info == null || string.IsNullOrEmpty(info.resolvedPath))
         {
             Debug.LogWarning("[KitchenGuide] ugui package not found — cannot auto-import TMP Essentials.");
