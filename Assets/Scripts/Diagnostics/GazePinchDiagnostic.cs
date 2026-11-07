@@ -4,8 +4,12 @@
 // feedback lives on the target, per the project's no-hand-models design rule.
 //
 // Self-bootstrapping via RuntimeInitializeOnLoadMethod: needs NO scene wiring.
-// Spawns a panel 2 m ahead of wherever the user is looking at app start, a gaze
-// reticle, and three status orbs under the panel:
+// Spawns a panel 2 m ahead of the user's head once tracking reports a settled,
+// plausible head pose (v2 — v1 placed it at Start from an unconverged pose and
+// it landed on the floor). Placement law: eye height, yaw-flattened forward.
+// A long pinch (>= 0.8 s) started while NOT gazing at the panel SUMMONS it:
+// the panel re-places in front of the current head pose. Hand-mesh renderers
+// under any OVRHand are disabled from code (tracking yes, virtual hands no).
 //   LEFT orb  = left hand tracked (cyan) / not tracked (grey) / no OVRHand found (red)
 //   MID  orb  = pinch state (yellow while pinching)
 //   RIGHT orb = right hand, same scheme as left
@@ -48,6 +52,15 @@ public class GazePinchDiagnostic : MonoBehaviour
     private float _logTimer;
     private int _selectCount;
 
+    private GameObject _orbL, _orbPinch, _orbR;
+    private bool _placed;
+    private float _bootTime;
+    private int _stableFrames;
+    private Vector3 _lastHeadPos;
+    private float _pinchStartTime;
+    private bool _pinchFromPanel;
+    private bool _summonFired;
+
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void Bootstrap()
     {
@@ -66,12 +79,19 @@ public class GazePinchDiagnostic : MonoBehaviour
             return;
         }
 
+        FindHands();
+        _bootTime = Time.time;
+        Debug.Log(Tag + " waiting for a stable head pose before placing the panel...");
+    }
+
+    private void FindHands()
+    {
         var rig = FindAnyObjectByType<OVRCameraRig>();
         if (rig != null)
         {
-            if (rig.leftHandAnchor != null)
+            if (_leftHand == null && rig.leftHandAnchor != null)
                 _leftHand = rig.leftHandAnchor.GetComponentInChildren<OVRHand>(true);
-            if (rig.rightHandAnchor != null)
+            if (_rightHand == null && rig.rightHandAnchor != null)
                 _rightHand = rig.rightHandAnchor.GetComponentInChildren<OVRHand>(true);
         }
         if (_leftHand == null || _rightHand == null)
@@ -79,14 +99,27 @@ public class GazePinchDiagnostic : MonoBehaviour
             var hands = FindObjectsByType<OVRHand>(FindObjectsInactive.Include);
             foreach (var h in hands)
             {
-                if (_leftHand == null) _leftHand = h;
+                if (_leftHand == null && h != _rightHand) _leftHand = h;
                 else if (_rightHand == null && h != _leftHand) _rightHand = h;
             }
         }
+        HideHandVisuals(_leftHand);
+        HideHandVisuals(_rightHand);
         Debug.Log(Tag + " OVRHand found: left=" + (_leftHand != null) +
                   " right=" + (_rightHand != null) + " rig=" + (rig != null));
+    }
 
-        BuildTestRig();
+    // No-hand-models design rule: keep the tracking components, kill the meshes.
+    private static void HideHandVisuals(OVRHand hand)
+    {
+        if (hand == null) return;
+        int hidden = 0;
+        foreach (var r in hand.GetComponentsInChildren<Renderer>(true))
+        {
+            if (r.enabled) { r.enabled = false; hidden++; }
+        }
+        if (hidden > 0)
+            Debug.Log(Tag + " hid " + hidden + " hand-mesh renderer(s) on " + hand.name);
     }
 
     private static Material MakeMat(Color c)
@@ -99,41 +132,56 @@ public class GazePinchDiagnostic : MonoBehaviour
         return m;
     }
 
-    private void BuildTestRig()
+    // Placement law (Boss's call, 2026-11-07): menus spawn from the user's ACTUAL
+    // head pose — eye height, 2 m ahead, yaw-flattened so panels stay upright.
+    // Creates the test objects on first call; repositions them on later calls.
+    private void PlacePanel()
     {
-        Vector3 fwd = _cam.transform.forward;
-        Vector3 panelPos = _cam.transform.position + fwd * 2.0f;
-        Quaternion panelRot = Quaternion.LookRotation(fwd, Vector3.up);
-        Vector3 right = panelRot * Vector3.right;
-        Vector3 up = panelRot * Vector3.up;
+        Vector3 headPos = _cam.transform.position;
+        Vector3 flatFwd = Vector3.ProjectOnPlane(_cam.transform.forward, Vector3.up);
+        if (flatFwd.sqrMagnitude < 0.01f)
+            flatFwd = Vector3.ProjectOnPlane(_cam.transform.right, Vector3.up);
+        flatFwd.Normalize();
+        Quaternion rot = Quaternion.LookRotation(flatFwd, Vector3.up);
+        Vector3 panelPos = headPos + flatFwd * 2.0f;
+        Vector3 right = rot * Vector3.right;
+        Vector3 up = rot * Vector3.up;
 
-        _panelMat = MakeMat(PanelIdle);
-        _panel = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        _panel.name = "GazePanel";
+        if (_panel == null)
+        {
+            _panelMat = MakeMat(PanelIdle);
+            _panel = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            _panel.name = "GazePanel";
+            _panel.transform.localScale = new Vector3(0.55f, 0.38f, 0.03f);
+            _panel.GetComponent<Renderer>().sharedMaterial = _panelMat;
+            _panelCollider = _panel.GetComponent<Collider>();
+
+            _orbLMat = MakeMat(OrbOff);
+            _orbPinchMat = MakeMat(OrbOff);
+            _orbRMat = MakeMat(OrbOff);
+            _orbL = MakeOrb(Vector3.zero, _orbLMat, "OrbLeft");
+            _orbPinch = MakeOrb(Vector3.zero, _orbPinchMat, "OrbPinch");
+            _orbR = MakeOrb(Vector3.zero, _orbRMat, "OrbRight");
+
+            _reticleMat = MakeMat(ReticleIdle);
+            _reticle = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            _reticle.name = "GazeReticle";
+            Destroy(_reticle.GetComponent<Collider>());
+            _reticle.GetComponent<Renderer>().sharedMaterial = _reticleMat;
+            _reticle.transform.localScale = Vector3.one * 0.01f;
+        }
+
         _panel.transform.position = panelPos;
-        _panel.transform.rotation = panelRot;
-        _panel.transform.localScale = new Vector3(0.55f, 0.38f, 0.03f);
-        _panel.GetComponent<Renderer>().sharedMaterial = _panelMat;
-        _panelCollider = _panel.GetComponent<Collider>();
-
-        _orbLMat = MakeMat(OrbOff);
-        _orbPinchMat = MakeMat(OrbOff);
-        _orbRMat = MakeMat(OrbOff);
-        MakeOrb(panelPos + right * -0.12f + up * -0.28f + fwd * 0.02f, _orbLMat, "OrbLeft");
-        MakeOrb(panelPos + right *  0.00f + up * -0.28f + fwd * 0.02f, _orbPinchMat, "OrbPinch");
-        MakeOrb(panelPos + right *  0.12f + up * -0.28f + fwd * 0.02f, _orbRMat, "OrbRight");
-
-        _reticleMat = MakeMat(ReticleIdle);
-        _reticle = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        _reticle.name = "GazeReticle";
-        Destroy(_reticle.GetComponent<Collider>());
-        _reticle.GetComponent<Renderer>().sharedMaterial = _reticleMat;
-        _reticle.transform.localScale = Vector3.one * 0.01f;
-
-        Debug.Log(Tag + " panel placed at " + panelPos);
+        _panel.transform.rotation = rot;
+        _orbL.transform.position = panelPos + right * -0.12f + up * -0.28f + flatFwd * 0.02f;
+        _orbPinch.transform.position = panelPos + right * 0.00f + up * -0.28f + flatFwd * 0.02f;
+        _orbR.transform.position = panelPos + right * 0.12f + up * -0.28f + flatFwd * 0.02f;
+        _placed = true;
+        Debug.Log(Tag + " panel placed at " + panelPos +
+                  " (head height " + headPos.y.ToString("0.00") + " m)");
     }
 
-    private void MakeOrb(Vector3 pos, Material mat, string name)
+    private GameObject MakeOrb(Vector3 pos, Material mat, string name)
     {
         var orb = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         orb.name = name;
@@ -141,6 +189,7 @@ public class GazePinchDiagnostic : MonoBehaviour
         orb.transform.localScale = Vector3.one * 0.042f;
         Destroy(orb.GetComponent<Collider>());
         orb.GetComponent<Renderer>().sharedMaterial = mat;
+        return orb;
     }
 
     private static bool HandTracked(OVRHand h)
@@ -164,7 +213,21 @@ public class GazePinchDiagnostic : MonoBehaviour
 
     private void Update()
     {
-        if (_cam == null || _panel == null) return;
+        if (_cam == null) return;
+
+        if (!_placed)
+        {
+            // Wait for a settled, plausible head pose (tracking converged,
+            // headset actually being worn) instead of placing at the origin.
+            // 8 s timeout places anyway — the summon gesture can re-place.
+            Vector3 hp = _cam.transform.position;
+            bool plausible = hp.y > 0.7f && hp.y < 2.3f;
+            bool settled = (hp - _lastHeadPos).sqrMagnitude < 0.0004f;
+            _stableFrames = (plausible && settled) ? _stableFrames + 1 : 0;
+            _lastHeadPos = hp;
+            if (_stableFrames >= 30 || Time.time - _bootTime > 8.0f) PlacePanel();
+            return;
+        }
 
         // --- gaze ---
         var ray = new Ray(_cam.transform.position, _cam.transform.forward);
@@ -186,6 +249,9 @@ public class GazePinchDiagnostic : MonoBehaviour
                        || OVRInput.Get(OVRInput.Button.PrimaryIndexTrigger);
         if (pinched && !_wasPinched)
         {
+            _pinchStartTime = Time.time;
+            _pinchFromPanel = gazing;
+            _summonFired = false;
             Debug.Log(Tag + " pinch DOWN (gazing=" + gazing + ")");
             if (gazing)
             {
@@ -194,6 +260,15 @@ public class GazePinchDiagnostic : MonoBehaviour
                 Debug.Log(Tag + " SELECT #" + _selectCount + " panelOn=" + _panelOn);
             }
         }
+        // Long pinch (>= 0.8 s) started AWAY from the panel = summon:
+        // re-place the panel in front of the current head pose.
+        if (pinched && !_pinchFromPanel && !_summonFired && Time.time - _pinchStartTime >= 0.8f)
+        {
+            _summonFired = true;
+            PlacePanel();
+            Debug.Log(Tag + " SUMMON — panel re-placed at current head pose");
+        }
+        if (!pinched) _summonFired = false;
         _wasPinched = pinched;
 
         // --- feedback colors ---
@@ -210,6 +285,7 @@ public class GazePinchDiagnostic : MonoBehaviour
         if (_logTimer >= 2.0f)
         {
             _logTimer = 0f;
+            if (_leftHand == null || _rightHand == null) FindHands();
             Debug.Log(Tag + " status L(tracked=" + HandTracked(_leftHand) +
                       ", pinch=" + PinchStrength(_leftHand).ToString("0.00") +
                       ") R(tracked=" + HandTracked(_rightHand) +
