@@ -65,9 +65,16 @@ public class GazePinchDiagnostic : MonoBehaviour
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void Bootstrap()
     {
+        // RETIRED 2026-11-07: the diagnostic proved the interaction loop
+        // (gaze, pinch, placement, occlusion) and handed off to
+        // KitchenGuideApp, which carries the same proven core. This file
+        // stays in the repo as reference; it no longer self-bootstraps.
+        return;
+#pragma warning disable CS0162
         if (FindAnyObjectByType<GazePinchDiagnostic>() != null) return;
         new GameObject("GazePinchDiagnostic").AddComponent<GazePinchDiagnostic>();
         Debug.Log(Tag + " diagnostic bootstrapped");
+#pragma warning restore CS0162
     }
 
     private void Start()
