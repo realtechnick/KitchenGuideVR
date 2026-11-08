@@ -300,15 +300,8 @@ public class KitchenGuideApp : MonoBehaviour
     // stays alive so Step C can still read scene data from MRUK.
     private void SuppressEffectMeshVisuals()
     {
-        foreach (var em in FindObjectsOfType<MRUKEffectMesh>())
-        {
-            var rend = em.GetComponent<Renderer>();
-            if (rend != null && rend.enabled)
-            {
-                rend.enabled = false;
-                Debug.Log(Tag + " effect mesh visual hidden (scene data kept)");
-            }
-        }
+        foreach (var em in FindObjectsByType<EffectMesh>(FindObjectsSortMode.None))
+            em.ToggleEffectMeshVisibility(false);
     }
 
     private void EnforceHandVisuals()
@@ -860,6 +853,29 @@ public class KitchenGuideApp : MonoBehaviour
         if (!PointerHitPoint(ray, rect, out Vector3 hit)) return false;
         Vector3 local = rect.InverseTransformPoint(hit);
         return rect.rect.Contains(new Vector2(local.x, local.y));
+    }
+
+    private void FaceChipToUser(TimerChip chip)
+    {
+        var dir = chip.Root.transform.position - _cam.transform.position;
+        if (dir.sqrMagnitude > 0.001f)
+            chip.Root.transform.rotation = Quaternion.LookRotation(dir.normalized);
+    }
+
+    private bool PointerOnBar(Ray ray, DragBar bar)
+    {
+        if (!PointerHitPoint(ray, bar.Rect, out Vector3 hit)) return false;
+        Vector3 local = bar.Rect.InverseTransformPoint(hit);
+        Rect r = bar.Rect.rect;
+        return local.x >= r.xMin - 28f && local.x <= r.xMax + 28f
+            && local.y >= r.yMin - 80f && local.y <= r.yMax + 16f;
+    }
+
+    private bool PointerOnChipBorder(Ray ray, TimerChip chip)
+    {
+        if (!PointerHitPoint(ray, chip.Rect, out Vector3 hit)) return false;
+        Vector3 local = chip.Rect.InverseTransformPoint(hit);
+        return InBand(chip.Rect.rect, new Vector2(local.x, local.y), 30f, 55f);
     }
 
     private void Update()
