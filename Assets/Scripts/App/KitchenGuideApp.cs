@@ -342,10 +342,42 @@ public class KitchenGuideApp : MonoBehaviour
         return h.GetFingerPinchStrength(OVRHand.HandFinger.Index);
     }
 
+    // Pinch reads are LATCHED with hysteresis: engage at 0.78, release at
+    // 0.45. A raw single-threshold read flickers as a real finger settles,
+    // and every re-crossing read as a fresh tap — Boss saw buttons
+    // double-fire and one tap spawn two timers. One pinch = one pulse.
+    private readonly Dictionary<OVRHand, bool> _pinchLatched = new Dictionary<OVRHand, bool>();
+
+    private bool PinchLatched(OVRHand h)
+    {
+        if (h == null || !h.IsTracked)
+        {
+            if (h != null) _pinchLatched[h] = false;
+            return false;
+        }
+        float s = PinchStrength(h);
+        bool latched = _pinchLatched.TryGetValue(h, out bool b) && b;
+        if (!latched && s >= 0.78f) latched = true;
+        else if (latched && s <= 0.45f) latched = false;
+        _pinchLatched[h] = latched;
+        return latched;
+    }
+
+    // Click cooldown (Boss's guard): even a clean pulse cannot activate
+    // twice within 0.35 s.
+    private float _lastClickTime = -10f;
+
+    private bool TryClick()
+    {
+        if (Time.time - _lastClickTime < 0.35f) return false;
+        _lastClickTime = Time.time;
+        return true;
+    }
+
     private bool AnyPinch()
     {
         foreach (var h in _hands)
-            if (h != null && h.IsTracked && PinchStrength(h) >= PinchThreshold)
+            if (PinchLatched(h))
                 return true;
         return OVRInput.Get(OVRInput.Button.PrimaryIndexTrigger, OVRInput.Controller.RTouch)
             || OVRInput.Get(OVRInput.Button.PrimaryIndexTrigger, OVRInput.Controller.LTouch);
@@ -814,7 +846,7 @@ public class KitchenGuideApp : MonoBehaviour
     // head pose now only decides where panels spawn.
     private bool HandPinching(OVRHand h)
     {
-        return h != null && h.IsTracked && PinchStrength(h) >= PinchThreshold;
+        return PinchLatched(h);
     }
 
     private bool TryGetPointerRay(out Ray ray)
@@ -1054,13 +1086,13 @@ public class KitchenGuideApp : MonoBehaviour
                 _dragOffset = _dragChip.Root.transform.position - grabHit;
                 UnanchorChip(_dragChip);
             }
-            else if (hoveredChip != null && hoveredChip.Done)
+            else if (hoveredChip != null && hoveredChip.Done && TryClick())
             {
                 if (hoveredChip.Bar != null) _dragBars.Remove(hoveredChip.Bar);
                 Destroy(hoveredChip.Root);
                 _timers.Remove(hoveredChip);
             }
-            else if (_hovered != null) _hovered.OnClick();
+            else if (_hovered != null && TryClick()) _hovered.OnClick();
             // Pinching the panel BODY does nothing (Boss): only buttons act.
         }
         _pinchWas = pointerPinch;
