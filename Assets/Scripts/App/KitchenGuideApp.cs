@@ -47,7 +47,7 @@ public class KitchenGuideApp : MonoBehaviour
     private const string Tag = "[KitchenGuide]";
     private const float PinchThreshold = 0.7f;
     private const float SummonSeconds = 0.8f;
-    private const float PanelDistance = 0.9f; // tablet-style panel spawns within reach (Boss, 2026-11-07)
+    private const float PanelDistance = 0.75f; // tablet-style panel spawns within reach (Boss, 2026-11-07)
 
     private sealed class Step
     {
@@ -64,7 +64,7 @@ public class KitchenGuideApp : MonoBehaviour
         public TextMeshProUGUI Label;
         public Action OnClick;
         public Color Normal = new Color(0.18f, 0.24f, 0.32f, 1f);
-        public readonly Color Hover = new Color(0.30f, 0.52f, 0.80f, 1f);
+        public readonly Color Hover = new Color(0.22f, 0.62f, 0.36f, 1f);
     }
 
     private sealed class TimerChip
@@ -73,31 +73,87 @@ public class KitchenGuideApp : MonoBehaviour
         public RectTransform Rect;
         public Image Bg;
         public TextMeshProUGUI TimeText;
+        public DragBar Bar;
         public float Remaining;
         public bool Done;
         public int LastShownSecond = -1;
     }
 
-    private static readonly Step[] Recipe =
+    // The nav pill under panels and timers — pinch-drag from a distance,
+    // complementing the border grip (kept per Boss, 2026-11-07).
+    private sealed class DragBar
     {
-        new Step { Title = "Broccoli & Carrot Stir-Fry",
-                   Body = "A quick weeknight stir-fry. I'll walk you through it step by step — pinch Next, or pinch the panel, to move on. Keep your ingredients out where I can see them." },
-        new Step { Title = "Heat the pan",
-                   Body = "Put your widest pan on medium-high heat. Add a tablespoon of oil and let it shimmer — about a minute. If it smokes hard, lift it off the heat for a few seconds." },
-        new Step { Title = "Show me the carrots",
-                   Body = "Hold the carrots up where I can see them. I'll check them off automatically when I spot them — no need to pinch anything.",
-                   DetectClass = "carrot" },
-        new Step { Title = "Show me the broccoli",
-                   Body = "Same trick with the broccoli. Cut it into small florets if you haven't — small pieces cook fast and get those crispy edges.",
-                   DetectClass = "broccoli" },
-        new Step { Title = "Stir-fry",
-                   Body = "Everything into the pan: carrots first for a minute, then broccoli. Start the timer and stir every 30 seconds or so, letting the edges catch the heat.",
-                   TimerSeconds = 180 },
-        new Step { Title = "Season",
-                   Body = "Off the heat: soy sauce, a pinch of salt, garlic if you're using it. Toss once more so everything glistens." },
-        new Step { Title = "Done — nice work",
-                   Body = "Plate it up. That's dinner, cooked with your hands free the whole way through." },
+        public RectTransform Rect;
+        public Image Bg;
+        public Transform Root;   // what moves when this bar is dragged
+        public TimerChip Chip;   // non-null when the root is a timer chip
+        public readonly Color Normal = new Color(1f, 1f, 1f, 0.35f);
+        public readonly Color Hover = new Color(1f, 1f, 1f, 0.95f);
+    }
+
+    private sealed class RecipeDef
+    {
+        public string Name;
+        public Step[] Steps;
+    }
+
+    private static readonly RecipeDef[] Recipes =
+    {
+        new RecipeDef { Name = "Broccoli & Carrot Stir-Fry", Steps = new Step[]
+        {
+            new Step { Title = "Broccoli & Carrot Stir-Fry",
+                       Body = "A quick weeknight stir-fry. I'll walk you through it step by step. Keep your ingredients out where I can see them." },
+            new Step { Title = "Heat the pan",
+                       Body = "Put your widest pan on medium-high heat. Add a tablespoon of oil and let it shimmer — about a minute. If it smokes hard, lift it off the heat for a few seconds." },
+            new Step { Title = "Show me the carrots",
+                       Body = "Hold the carrots up where I can see them. I'll check them off automatically when I spot them — no need to pinch anything.",
+                       DetectClass = "carrot" },
+            new Step { Title = "Show me the broccoli",
+                       Body = "Same trick with the broccoli. Cut it into small florets if you haven't — small pieces cook fast and get those crispy edges.",
+                       DetectClass = "broccoli" },
+            new Step { Title = "Stir-fry",
+                       Body = "Everything into the pan: carrots first for a minute, then broccoli. Start the timer and stir every 30 seconds or so, letting the edges catch the heat.",
+                       TimerSeconds = 180 },
+            new Step { Title = "Season",
+                       Body = "Off the heat: soy sauce, a pinch of salt, garlic if you're using it. Toss once more so everything glistens." },
+            new Step { Title = "Done — nice work",
+                       Body = "Plate it up. That's dinner, cooked with your hands free the whole way through." },
+        } },
+        new RecipeDef { Name = "Simple Garlic Pasta", Steps = new Step[]
+        {
+            new Step { Title = "Simple Garlic Pasta",
+                       Body = "Five ingredients, one pan, big flavor. I'll keep time and watch for what I need — you just cook." },
+            new Step { Title = "Boil the pasta",
+                       Body = "Salt a big pot of water generously and get it to a rolling boil. Drop the spaghetti and start the timer.",
+                       TimerSeconds = 480 },
+            new Step { Title = "Show me the cup",
+                       Body = "Before you drain anything: hold up a measuring cup where I can see it. We're saving a cup of that starchy pasta water — it's the sauce's secret.",
+                       DetectClass = "cup" },
+            new Step { Title = "Sizzle the garlic",
+                       Body = "Olive oil in a wide pan, low heat, sliced garlic in. Start the timer — you want pale gold, never brown.",
+                       TimerSeconds = 120 },
+            new Step { Title = "Toss and serve",
+                       Body = "Pasta into the garlic oil with splashes of pasta water until it shines. Parmesan over the top. Done." },
+        } },
+        new RecipeDef { Name = "Caprese Toast Plate", Steps = new Step[]
+        {
+            new Step { Title = "Caprese Toast Plate",
+                       Body = "Crunchy toast, cool tomato, creamy mozzarella. Assembly food at its best — I'll pace you." },
+            new Step { Title = "Toast the bread",
+                       Body = "Thick slices into the toaster or a dry hot pan. Start the timer and get them deeply golden.",
+                       TimerSeconds = 180 },
+            new Step { Title = "Show me the bowl",
+                       Body = "Hold up your mixing bowl where I can see it — the tomatoes get salted in there to draw out their juice.",
+                       DetectClass = "bowl" },
+            new Step { Title = "Slice and plate",
+                       Body = "Thick tomato slices, a pinch of salt, two minutes to weep. Then layer tomato and mozzarella over the toast." },
+            new Step { Title = "Finish and serve",
+                       Body = "Basil leaves, good olive oil, flaky salt, a crack of pepper. Eat it while the toast is still warm." },
+        } },
     };
+
+    private Step[] _activeSteps;
+    private string _activeRecipeName = "";
 
     private Camera _cam;
     private OVRHand[] _hands = new OVRHand[0];
@@ -106,7 +162,7 @@ public class KitchenGuideApp : MonoBehaviour
     // Placement (settled-pose, from the diagnostic)
     private bool _placed;
     private float _bootTime;
-    private int _stableFrames;
+    private float _stableFor;
     private Vector3 _lastHeadPos;
 
     // Pinch state
@@ -125,11 +181,18 @@ public class KitchenGuideApp : MonoBehaviour
     private GameObject _panelRoot;
     private Canvas _canvas;
     private RectTransform _canvasRect;
+
+    // UI modes: Welcome ("I'll be your sous chef") -> recipe List -> Steps.
+    private enum UiMode { Welcome, List, Steps }
+    private UiMode _mode = UiMode.Welcome;
+    private GameObject _welcomeGroup, _listGroup, _stepsGroup;
     private TextMeshProUGUI _titleText, _counterText, _stepCounterText, _stepTitleText, _stepBodyText, _hintText;
     private GameObject _hintChip;
     private AppButton _backBtn, _nextBtn, _timerBtn;
     private readonly List<AppButton> _buttons = new List<AppButton>();
     private AppButton _hovered;
+    private readonly List<DragBar> _dragBars = new List<DragBar>();
+    private DragBar _pillDrag;
     private TimerChip _dragChip;
     private float _dragDistance;
     private Vector3 _dragOffset;
@@ -173,14 +236,9 @@ public class KitchenGuideApp : MonoBehaviour
         RefreshStepUi();
         RefreshCounterUi();
 
-        if (OVRManager.display != null)
-            OVRManager.display.RecenteredPose += OnRecenteredPose;
-    }
-
-    private void OnRecenteredPose()
-    {
-        // The tracking frame just rotated — re-place in front of the user.
-        PlacePanel();
+        // NOTE (Boss's world-lock law, 2026-11-07): panels and timers are
+        // digital content placed precisely in the kitchen — a headset
+        // recenter must NOT move them. No RecenteredPose subscription.
     }
 
     // Contextual Boundaryless (Boundary API): this app is always in
@@ -227,9 +285,40 @@ public class KitchenGuideApp : MonoBehaviour
     // Hands: tracking scan + occlusion enforcement (proven patterns)
     // ---------------------------------------------------------------
 
+    // Per-hand skeleton bone cache for grip (curl) detection.
+    private sealed class GripRig
+    {
+        public Transform Wrist, M1, M2, M3, R1, R2, R3;
+    }
+
+    private readonly Dictionary<OVRHand, GripRig> _gripRigs = new Dictionary<OVRHand, GripRig>();
+    private float _lastGripHintLog;
+
     private void FindHands()
     {
         _hands = FindObjectsByType<OVRHand>(FindObjectsInactive.Include);
+        _gripRigs.Clear();
+        foreach (var h in _hands)
+        {
+            if (h == null) continue;
+            var skel = h.GetComponentInChildren<OVRSkeleton>(true);
+            if (skel == null) continue;
+            var rig = new GripRig();
+            foreach (var bone in skel.Bones)
+            {
+                switch (bone.Id)
+                {
+                    case OVRSkeleton.BoneId.Hand_WristRoot: rig.Wrist = bone.Transform; break;
+                    case OVRSkeleton.BoneId.Hand_Middle1: rig.M1 = bone.Transform; break;
+                    case OVRSkeleton.BoneId.Hand_Middle2: rig.M2 = bone.Transform; break;
+                    case OVRSkeleton.BoneId.Hand_Middle3: rig.M3 = bone.Transform; break;
+                    case OVRSkeleton.BoneId.Hand_Ring1: rig.R1 = bone.Transform; break;
+                    case OVRSkeleton.BoneId.Hand_Ring2: rig.R2 = bone.Transform; break;
+                    case OVRSkeleton.BoneId.Hand_Ring3: rig.R3 = bone.Transform; break;
+                }
+            }
+            if (rig.Wrist != null) _gripRigs[h] = rig;
+        }
         _rescanTimer = 1f; // occlusion enforcement picks them up next frame
     }
 
@@ -361,6 +450,16 @@ public class KitchenGuideApp : MonoBehaviour
         return t;
     }
 
+    private static RectTransform MakeGroup(Transform parent, string name)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(parent, false);
+        var rt = go.AddComponent<RectTransform>();
+        rt.anchorMin = Vector2.zero; rt.anchorMax = Vector2.one;
+        rt.offsetMin = Vector2.zero; rt.offsetMax = Vector2.zero;
+        return rt;
+    }
+
     private static Image MakeImage(Transform parent, string name,
         Vector2 anchorMin, Vector2 anchorMax, Vector2 pos, Vector2 size, Color color)
     {
@@ -394,6 +493,30 @@ public class KitchenGuideApp : MonoBehaviour
         if (a != null) Destroy(a);
     }
 
+    // The nav pill: a slim rounded handle under a panel or chip. Point at it
+    // and pinch-hold to drag its root from a distance; release to drop.
+    private DragBar MakeGrabBar(Transform rootToMove, Vector3 localPos, TimerChip chip, Vector2 size)
+    {
+        var go = new GameObject("GrabBar");
+        go.transform.SetParent(rootToMove, false);
+        // Compensate for the parent's scale: the panel root is unscaled
+        // (positions in meters) but a timer chip's root IS its canvas
+        // (scale 0.001, positions in canvas units).
+        float ps = Mathf.Max(0.00001f, rootToMove.lossyScale.x);
+        go.transform.localPosition = localPos / ps;
+        go.transform.localScale = Vector3.one * (0.001f / ps);
+        var canvas = go.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.WorldSpace;
+        var rect = go.GetComponent<RectTransform>();
+        rect.sizeDelta = size;
+        // Simple white system-style bar: translucent at rest, glowing on hover.
+        var bg = MakeImage(rect, "BarBg", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
+            new Color(1f, 1f, 1f, 0.35f));
+        var bar = new DragBar { Rect = rect, Bg = bg, Root = rootToMove, Chip = chip };
+        _dragBars.Add(bar);
+        return bar;
+    }
+
     private AppButton MakeButton(Transform parent, string label, Vector2 pos, Vector2 size, Color normal, Action onClick)
     {
         var bg = MakeImage(parent, "Btn_" + label, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f),
@@ -418,48 +541,88 @@ public class KitchenGuideApp : MonoBehaviour
         _canvas.renderMode = RenderMode.WorldSpace;
         _canvasRect = canvasGo.GetComponent<RectTransform>();
         _canvasRect.sizeDelta = new Vector2(1400f, 900f);
-        _canvasRect.localScale = new Vector3(0.00042f, 0.00042f, 0.00042f); // 0.59 x 0.38 m
+        _canvasRect.localScale = new Vector3(0.00034f, 0.00034f, 0.00034f); // 0.48 x 0.31 m
 
         var top = new Vector2(0f, 1f); var topL = new Vector2(0f, 1f); var topR = new Vector2(1f, 1f);
         // A visible frame edge: it reads as "grip me" — gripping the border
         // with a full hand is literally how the panel moves now.
         MakeImage(_canvasRect, "Border", Vector2.zero, Vector2.one, Vector2.zero, new Vector2(56f, 56f),
-            new Color(0.55f, 0.62f, 0.72f, 0.5f));
+            new Color(0.04f, 0.22f, 0.11f, 0.75f));
         MakeImage(_canvasRect, "Bg", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
-            new Color(0.07f, 0.09f, 0.12f, 0.82f));
+            new Color(0.10f, 0.24f, 0.15f, 0.82f));
 
-        _titleText = MakeText(_canvasRect, "Title", topL, topR, new Vector2(50f, -30f),
+        var stepsRt = MakeGroup(_canvasRect, "StepsGroup");
+        var listRt = MakeGroup(_canvasRect, "ListGroup");
+        var welcomeRt = MakeGroup(_canvasRect, "WelcomeGroup");
+        _stepsGroup = stepsRt.gameObject;
+        _listGroup = listRt.gameObject;
+        _welcomeGroup = welcomeRt.gameObject;
+
+        _titleText = MakeText(stepsRt, "Title", topL, topR, new Vector2(50f, -30f),
             new Vector2(-360f, 72f), 54f, TextAlignmentOptions.Left,
             new Color(0.95f, 0.96f, 0.98f), FontStyles.Bold);
-        _titleText.text = Recipe[0].Title;
+        _titleText.text = "";
 
-        _stepCounterText = MakeText(_canvasRect, "StepCounter", topR, topR, new Vector2(-50f, -38f),
-            new Vector2(300f, 60f), 40f, TextAlignmentOptions.Right, new Color(0.62f, 0.68f, 0.75f));
+        _stepCounterText = MakeText(stepsRt, "StepCounter", topR, topR, new Vector2(-50f, -38f),
+            new Vector2(300f, 60f), 40f, TextAlignmentOptions.Right, new Color(0.60f, 0.72f, 0.62f));
         _stepCounterText.GetComponent<RectTransform>().pivot = new Vector2(1f, 1f);
 
-        _counterText = MakeText(_canvasRect, "Counter", topL, topR, new Vector2(50f, -118f),
-            new Vector2(-100f, 56f), 38f, TextAlignmentOptions.Left, new Color(0.62f, 0.85f, 1f));
+        _counterText = MakeText(stepsRt, "Counter", topL, topR, new Vector2(50f, -118f),
+            new Vector2(-100f, 56f), 38f, TextAlignmentOptions.Left, new Color(0.65f, 0.95f, 0.72f));
 
-        _stepTitleText = MakeText(_canvasRect, "StepTitle", topL, topR, new Vector2(50f, -196f),
+        _stepTitleText = MakeText(stepsRt, "StepTitle", topL, topR, new Vector2(50f, -196f),
             new Vector2(-100f, 84f), 58f, TextAlignmentOptions.Left,
             new Color(1f, 1f, 1f), FontStyles.Bold);
 
-        _stepBodyText = MakeText(_canvasRect, "StepBody", topL, topR, new Vector2(50f, -292f),
+        _stepBodyText = MakeText(stepsRt, "StepBody", topL, topR, new Vector2(50f, -292f),
             new Vector2(-100f, 330f), 44f, TextAlignmentOptions.TopLeft,
-            new Color(0.90f, 0.92f, 0.95f));
+            new Color(0.90f, 0.95f, 0.90f));
         _stepBodyText.lineSpacing = 12f;
 
         // Detection hint chip (visible on detect steps)
-        var chipImg = MakeImage(_canvasRect, "HintChip", new Vector2(0f, 0f), new Vector2(1f, 0f),
+        var chipImg = MakeImage(stepsRt, "HintChip", new Vector2(0f, 0f), new Vector2(1f, 0f),
             new Vector2(0f, 158f), new Vector2(-100f, 64f), new Color(0.10f, 0.24f, 0.17f, 1f));
         _hintChip = chipImg.gameObject;
         _hintText = MakeText(chipImg.transform, "HintText", Vector2.zero, Vector2.one,
             Vector2.zero, Vector2.zero, 38f, TextAlignmentOptions.Center, new Color(0.75f, 1f, 0.85f));
         _hintText.GetComponent<RectTransform>().pivot = new Vector2(0.5f, 0.5f);
 
-        _backBtn = MakeButton(_canvasRect, "< Back", new Vector2(-440f, 36f), new Vector2(310f, 104f), new Color(0.16f, 0.19f, 0.24f, 1f), PrevStep);
-        _timerBtn = MakeButton(_canvasRect, "Start timer", new Vector2(0f, 36f), new Vector2(370f, 104f), new Color(0.17f, 0.27f, 0.21f, 1f), StartStepTimer);
-        _nextBtn = MakeButton(_canvasRect, "Next >", new Vector2(440f, 36f), new Vector2(310f, 104f), new Color(0.13f, 0.42f, 0.72f, 1f), NextStep);
+        _backBtn = MakeButton(stepsRt, "< Back", new Vector2(-440f, 36f), new Vector2(310f, 104f), new Color(0.07f, 0.15f, 0.10f, 1f), PrevStep);
+        _timerBtn = MakeButton(stepsRt, "Start timer", new Vector2(0f, 36f), new Vector2(370f, 104f), new Color(0.10f, 0.28f, 0.15f, 1f), StartStepTimer);
+        _nextBtn = MakeButton(stepsRt, "Next >", new Vector2(440f, 36f), new Vector2(310f, 104f), new Color(0.12f, 0.48f, 0.26f, 1f), NextStep);
+
+        // Nav pill under the panel — the "from a distance" drag option that
+        // complements border gripping (kept per Boss, 2026-11-07).
+        MakeGrabBar(_panelRoot.transform, new Vector3(0f, -0.19f, 0f), null, new Vector2(140f, 12f));
+
+        // --- Welcome group: the sous-chef greeting + Let's Cook ---
+        var sousT = MakeText(welcomeRt, "SousChef", topL, topR, new Vector2(60f, -250f),
+            new Vector2(-120f, 140f), 76f, TextAlignmentOptions.Center,
+            new Color(0.95f, 0.98f, 0.95f), FontStyles.Italic);
+        sousT.text = "I'll be your sous chef";
+        sousT.characterSpacing = 2f;
+        var sousSub = MakeText(welcomeRt, "SousSub", topL, topR, new Vector2(60f, -400f),
+            new Vector2(-120f, 60f), 36f, TextAlignmentOptions.Center, new Color(0.68f, 0.82f, 0.70f));
+        sousSub.text = "Recipes, timers, and an extra pair of eyes — right in your kitchen.";
+        MakeButton(welcomeRt, "Let's Cook", new Vector2(0f, 200f), new Vector2(480f, 120f),
+            new Color(0.12f, 0.48f, 0.26f, 1f), ShowRecipeList);
+
+        // --- Recipe list group ---
+        var listTitle = MakeText(listRt, "ListTitle", topL, topR, new Vector2(50f, -44f),
+            new Vector2(-100f, 76f), 52f, TextAlignmentOptions.Left,
+            new Color(0.95f, 0.98f, 0.95f), FontStyles.Bold);
+        listTitle.text = "What are we cooking?";
+        for (int i = 0; i < Recipes.Length; i++)
+        {
+            int idx = i;
+            MakeButton(listRt, Recipes[i].Name, new Vector2(0f, 520f - i * 148f), new Vector2(780f, 116f),
+                new Color(0.10f, 0.30f, 0.17f, 1f), () => StartRecipe(idx));
+        }
+        MakeButton(listRt, "< Back", new Vector2(-440f, 36f), new Vector2(310f, 104f),
+            new Color(0.07f, 0.15f, 0.10f, 1f), ShowWelcome);
+
+        _listGroup.SetActive(false);
+        _stepsGroup.SetActive(false);
 
         // Pointer reticle: a small semi-transparent circle, system-UI style —
         // drawn with the UI shader (never stripped) on its own tiny canvas.
@@ -488,8 +651,9 @@ public class KitchenGuideApp : MonoBehaviour
 
     private void RefreshStepUi()
     {
-        var s = Recipe[_stepIndex];
-        _stepCounterText.text = "Step " + (_stepIndex + 1) + " of " + Recipe.Length;
+        if (_activeSteps == null) return;
+        var s = _activeSteps[_stepIndex];
+        _stepCounterText.text = "Step " + (_stepIndex + 1) + " of " + _activeSteps.Length;
         _stepTitleText.text = s.Title;
         _stepBodyText.text = s.Body;
         bool hasDetect = s.DetectClass != null;
@@ -501,7 +665,7 @@ public class KitchenGuideApp : MonoBehaviour
         if (s.TimerSeconds > 0)
             _timerBtn.Label.text = "Start " + (s.TimerSeconds / 60) + ":" + (s.TimerSeconds % 60).ToString("00") + " timer";
         _backBtn.Rect.gameObject.SetActive(_stepIndex > 0);
-        _nextBtn.Rect.gameObject.SetActive(_stepIndex < Recipe.Length - 1);
+        _nextBtn.Rect.gameObject.SetActive(_stepIndex < _activeSteps.Length - 1);
         _detectSatisfiedFor = 0f;
     }
 
@@ -521,12 +685,43 @@ public class KitchenGuideApp : MonoBehaviour
 
     private void NextStep()
     {
-        if (_stepIndex < Recipe.Length - 1) { _stepIndex++; RefreshStepUi(); }
+        if (_stepIndex < _activeSteps.Length - 1) { _stepIndex++; RefreshStepUi(); }
     }
 
     private void PrevStep()
     {
         if (_stepIndex > 0) { _stepIndex--; RefreshStepUi(); }
+        else ShowRecipeList(); // Back from a recipe's first step returns to the list
+    }
+
+    private void ShowWelcome()
+    {
+        _mode = UiMode.Welcome;
+        _welcomeGroup.SetActive(true);
+        _listGroup.SetActive(false);
+        _stepsGroup.SetActive(false);
+    }
+
+    private void ShowRecipeList()
+    {
+        _mode = UiMode.List;
+        CounterState.DetectionBoost = false;
+        _welcomeGroup.SetActive(false);
+        _listGroup.SetActive(true);
+        _stepsGroup.SetActive(false);
+    }
+
+    private void StartRecipe(int index)
+    {
+        _activeSteps = Recipes[index].Steps;
+        _activeRecipeName = Recipes[index].Name;
+        _stepIndex = 0;
+        _mode = UiMode.Steps;
+        _welcomeGroup.SetActive(false);
+        _listGroup.SetActive(false);
+        _stepsGroup.SetActive(true);
+        _titleText.text = _activeRecipeName;
+        RefreshStepUi();
     }
 
     // ---------------------------------------------------------------
@@ -535,7 +730,7 @@ public class KitchenGuideApp : MonoBehaviour
 
     private void StartStepTimer()
     {
-        var s = Recipe[_stepIndex];
+        var s = _activeSteps[_stepIndex];
         if (s.TimerSeconds <= 0) return;
         SpawnTimer(s.Title, s.TimerSeconds);
     }
@@ -546,21 +741,21 @@ public class KitchenGuideApp : MonoBehaviour
         var canvas = root.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.WorldSpace;
         var rect = root.GetComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(340f, 190f);
+        rect.sizeDelta = new Vector2(300f, 168f);
         rect.localScale = new Vector3(0.001f, 0.001f, 0.001f);
 
         var dir = _cam.transform.forward; dir.y = 0f; dir.Normalize();
         var right = new Vector3(dir.z, 0f, -dir.x);
-        float side = (_timers.Count % 2 == 0) ? -0.30f : 0.30f;
-        root.transform.position = _cam.transform.position + dir * 1.0f + right * side + new Vector3(0f, -0.10f, 0f);
+        float side = (_timers.Count % 2 == 0) ? -0.26f : 0.26f;
+        root.transform.position = _cam.transform.position + dir * 0.9f + right * side + new Vector3(0f, -0.10f, 0f);
 
         MakeImage(rect, "ChipBorder", Vector2.zero, Vector2.one, Vector2.zero, new Vector2(36f, 36f),
-            new Color(0.55f, 0.62f, 0.72f, 0.5f));
+            new Color(0.04f, 0.22f, 0.11f, 0.75f));
         var bg = MakeImage(rect, "ChipBg", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
-            new Color(0.07f, 0.09f, 0.12f, 0.85f));
+            new Color(0.10f, 0.24f, 0.15f, 0.85f));
         var nameT = MakeText(rect, "ChipName", new Vector2(0f, 1f), new Vector2(1f, 1f),
             new Vector2(0f, -10f), new Vector2(0f, 42f), 30f, TextAlignmentOptions.Center,
-            new Color(0.62f, 0.85f, 1f));
+            new Color(0.65f, 0.95f, 0.72f));
         nameT.text = label;
         // The countdown text lives on its OWN child canvas: it mutates once
         // per second, and a text change rebuilds its whole canvas — isolating
@@ -571,10 +766,10 @@ public class KitchenGuideApp : MonoBehaviour
         var timeCanvas = timeCanvasGo.AddComponent<Canvas>();
         timeCanvas.renderMode = RenderMode.WorldSpace;
         var timeRect = timeCanvasGo.GetComponent<RectTransform>();
-        timeRect.sizeDelta = new Vector2(340f, 190f);
+        timeRect.sizeDelta = new Vector2(300f, 168f);
         timeRect.localScale = Vector3.one; // chip root already carries the 0.001
         var timeT = MakeText(timeRect, "ChipTime", Vector2.zero, Vector2.one,
-            new Vector2(0f, -12f), Vector2.zero, 76f, TextAlignmentOptions.Center,
+            new Vector2(0f, -12f), Vector2.zero, 68f, TextAlignmentOptions.Center,
             new Color(1f, 1f, 1f), FontStyles.Bold);
         timeT.GetComponent<RectTransform>().pivot = new Vector2(0.5f, 0.5f);
 
@@ -583,6 +778,7 @@ public class KitchenGuideApp : MonoBehaviour
             Root = root, Rect = rect, Bg = bg, TimeText = timeT,
             Remaining = seconds, Done = false
         };
+        chip.Bar = MakeGrabBar(root.transform, new Vector3(0f, -0.125f, 0f), chip, new Vector2(200f, 14f));
         _timers.Add(chip);
         FaceChipToUser(chip);
         AnchorChip(chip);
@@ -681,16 +877,39 @@ public class KitchenGuideApp : MonoBehaviour
         return rect.rect.Contains(new Vector2(local.x, local.y));
     }
 
-    // Grip = full-hand closure: middle + ring fingers curled hard. A pinch
-    // (thumb+index) never satisfies it; while a grip is live, pinch actions
-    // are suppressed so the two never fight.
-    private const float GripThreshold = 0.65f;
+    // Grip = full-hand closure. Two independent detectors, either may fire:
+    // (a) skeleton curl — the middle/ring fingers' actual joint flexion
+    // from the tracked bones (the true fist signal); (b) multi-finger
+    // pinch strengths (middle+ring toward the thumb). A thumb-index pinch
+    // satisfies NEITHER — middle/ring stay open — so grip and pinch can
+    // never be confused. (v1 used only pinch strengths, strictly, inside a
+    // thin border band: Boss reported grips never registering at all.
+    // v2 widens the zone to the whole panel edge area and logs its work.)
+    private const float GripCurlDegrees = 60f;
+    private const float GripPinchStrength = 0.55f;
 
-    private static bool HandGripping(OVRHand h)
+    private static float FingerCurl(Transform wrist, Transform a, Transform b, Transform c)
     {
-        return h != null && h.IsTracked
-            && h.GetFingerPinchStrength(OVRHand.HandFinger.Middle) >= GripThreshold
-            && h.GetFingerPinchStrength(OVRHand.HandFinger.Ring) >= GripThreshold;
+        if (wrist == null || a == null || b == null || c == null) return 0f;
+        var d0 = a.position - wrist.position;
+        var d1 = b.position - a.position;
+        var d2 = c.position - b.position;
+        if (d0.sqrMagnitude < 1e-8f || d1.sqrMagnitude < 1e-8f || d2.sqrMagnitude < 1e-8f) return 0f;
+        return Vector3.Angle(d0, d1) + Vector3.Angle(d1, d2);
+    }
+
+    private bool HandGripping(OVRHand h, out float midCurl, out float ringCurl)
+    {
+        midCurl = 0f; ringCurl = 0f;
+        if (h == null || !h.IsTracked) return false;
+        if (_gripRigs.TryGetValue(h, out var rig))
+        {
+            midCurl = FingerCurl(rig.Wrist, rig.M1, rig.M2, rig.M3);
+            ringCurl = FingerCurl(rig.Wrist, rig.R1, rig.R2, rig.R3);
+            if (midCurl >= GripCurlDegrees && ringCurl >= GripCurlDegrees) return true;
+        }
+        return h.GetFingerPinchStrength(OVRHand.HandFinger.Middle) >= GripPinchStrength
+            && h.GetFingerPinchStrength(OVRHand.HandFinger.Ring) >= GripPinchStrength;
     }
 
     // Border band test in a rect's local space: inside the (slightly
@@ -710,6 +929,18 @@ public class KitchenGuideApp : MonoBehaviour
         if (!PointerHitPoint(ray, chip.Rect, out Vector3 hit)) return false;
         Vector3 local = chip.Rect.InverseTransformPoint(hit);
         return InBand(chip.Rect.rect, new Vector2(local.x, local.y), 30f, 55f);
+    }
+
+    // Pills are thin — their hit test uses a comfort zone: generous below
+    // the bar (where the hand naturally approaches from), modest above and
+    // to the sides. Hard to miss on purpose.
+    private bool PointerOnBar(Ray ray, DragBar bar)
+    {
+        if (!PointerHitPoint(ray, bar.Rect, out Vector3 hit)) return false;
+        Vector3 local = bar.Rect.InverseTransformPoint(hit);
+        Rect r = bar.Rect.rect;
+        return local.x >= r.xMin - 35f && local.x <= r.xMax + 35f
+            && local.y >= r.yMin - 120f && local.y <= r.yMax + 40f;
     }
 
     // A timer corrects its tilt to face the user's head from wherever it
@@ -743,9 +974,9 @@ public class KitchenGuideApp : MonoBehaviour
             float h = _cam.transform.position.y;
             float moved = Vector3.Distance(_cam.transform.position, _lastHeadPos);
             _lastHeadPos = _cam.transform.position;
-            if (h > 0.7f && h < 2.3f && moved < 0.02f) _stableFrames++;
-            else _stableFrames = 0;
-            if (_stableFrames >= 30 || Time.time - _bootTime > 8f) PlacePanel();
+            if (h > 0.7f && h < 2.3f && moved < 0.02f) _stableFor += Time.deltaTime;
+            else _stableFor = 0f;
+            if (_stableFor >= 0.6f || Time.time - _bootTime > 8f) PlacePanel();
             return;
         }
 
@@ -757,13 +988,16 @@ public class KitchenGuideApp : MonoBehaviour
         }
 
         // Detection-aware step: advance shortly after the item is seen
-        var step = Recipe[_stepIndex];
-        if (step.DetectClass != null && CounterState.Seen.Contains(step.DetectClass))
+        if (_mode == UiMode.Steps && _activeSteps != null)
         {
-            _detectSatisfiedFor += Time.deltaTime;
-            if (_detectSatisfiedFor >= 0.8f) NextStep();
+            var step = _activeSteps[_stepIndex];
+            if (step.DetectClass != null && CounterState.Seen.Contains(step.DetectClass))
+            {
+                _detectSatisfiedFor += Time.deltaTime;
+                if (_detectSatisfiedFor >= 0.8f) NextStep();
+            }
+            else _detectSatisfiedFor = 0f;
         }
-        else _detectSatisfiedFor = 0f;
 
         // --- Interaction: pointer pinches select; a full-hand GRIP on the
         // panel's border moves it like a paperboard; timers pinch-drag by
@@ -772,14 +1006,21 @@ public class KitchenGuideApp : MonoBehaviour
         bool pointerPinch = hasRay && HandPinching(_activeHand);
 
         bool gripStartedThisFrame = false;
-        if (!_gripping && _dragChip == null)
+        if (!_gripping && _dragChip == null && _pillDrag == null)
         {
+            var pr = _canvasRect.rect;
             foreach (var h in _hands)
             {
-                if (h == null || !h.IsTracked || !HandGripping(h)) continue;
+                if (h == null || !h.IsTracked) continue;
+                if (!HandGripping(h, out float mc, out float rc)) continue;
                 Vector3 gp = h.PointerPose.position;
                 Vector3 local = _canvasRect.InverseTransformPoint(gp);
-                if (InBand(_canvasRect.rect, new Vector2(local.x, local.y), 50f, 110f))
+                // Zone: anywhere on the panel or just past its edges — when
+                // you grip an edge, your palm sits over the panel face, so
+                // v1's thin border band almost never contained the hand.
+                bool inZone = local.x >= pr.xMin - 80f && local.x <= pr.xMax + 80f
+                           && local.y >= pr.yMin - 80f && local.y <= pr.yMax + 80f;
+                if (inZone)
                 {
                     _gripping = true;
                     gripStartedThisFrame = true;
@@ -788,13 +1029,22 @@ public class KitchenGuideApp : MonoBehaviour
                     _gripHandRot0 = h.PointerPose.rotation;
                     _panelPos0 = _panelRoot.transform.position;
                     _panelRot0 = _panelRoot.transform.rotation;
+                    Debug.Log(Tag + " grip start (midCurl " + mc.ToString("F0")
+                        + ", ringCurl " + rc.ToString("F0") + ")");
                     break;
+                }
+                else if (Time.time - _lastGripHintLog > 1.5f)
+                {
+                    _lastGripHintLog = Time.time;
+                    Debug.Log(Tag + " grip near-miss: fist closed (midCurl " + mc.ToString("F0")
+                        + ", ringCurl " + rc.ToString("F0") + ") but hand at panel-local ("
+                        + local.x.ToString("F0") + ", " + local.y.ToString("F0") + ") — outside the zone");
                 }
             }
         }
         if (_gripping)
         {
-            if (_gripHand == null || !_gripHand.IsTracked || !HandGripping(_gripHand))
+            if (_gripHand == null || !_gripHand.IsTracked || !HandGripping(_gripHand, out _, out _))
             {
                 _gripping = false;
                 _gripHand = null;
@@ -832,14 +1082,45 @@ public class KitchenGuideApp : MonoBehaviour
             }
         }
 
-        CounterState.Dragging = _dragChip != null || _gripping;
+        // Nav-pill drag in progress (panel or timer, moved from a distance).
+        if (_pillDrag != null)
+        {
+            if (pointerPinch)
+            {
+                Vector3 target = pointerRay.GetPoint(_dragDistance) + _dragOffset;
+                float k = 1f - Mathf.Exp(-18f * Time.deltaTime);
+                _pillDrag.Root.position = Vector3.Lerp(_pillDrag.Root.position, target, k);
+                var away = _pillDrag.Root.position - _cam.transform.position;
+                away.y = 0f;
+                if (away.sqrMagnitude > 0.001f)
+                    _pillDrag.Root.rotation = Quaternion.Slerp(_pillDrag.Root.rotation,
+                        Quaternion.LookRotation(away.normalized), k);
+            }
+            else
+            {
+                if (_pillDrag.Chip != null)
+                {
+                    FaceChipToUser(_pillDrag.Chip);
+                    AnchorChip(_pillDrag.Chip);
+                }
+                _pillDrag.Bg.color = _pillDrag.Normal;
+                _pillDrag = null;
+            }
+        }
 
+        CounterState.Dragging = _dragChip != null || _pillDrag != null || _gripping;
+
+        DragBar hoveredBar = null;
         TimerChip hoveredChip = null;
         TimerChip borderChip = null;
         AppButton newHover = null;
         bool onPanel = false;
-        if (hasRay && _dragChip == null && !_gripping)
+        if (hasRay && _dragChip == null && _pillDrag == null && !_gripping)
         {
+            foreach (var bar in _dragBars)
+                if (bar.Rect.gameObject.activeInHierarchy && PointerOnBar(pointerRay, bar)) { hoveredBar = bar; break; }
+            if (hoveredBar == null)
+            {
             foreach (var chip in _timers)
             {
                 if (PointerOnChipBorder(pointerRay, chip)) { borderChip = chip; break; }
@@ -851,6 +1132,7 @@ public class KitchenGuideApp : MonoBehaviour
                     if (b.Rect.gameObject.activeInHierarchy && PointerOn(pointerRay, b.Rect)) { newHover = b; break; }
                 if (newHover == null) onPanel = PointerOn(pointerRay, _canvasRect);
             }
+            }
         }
 
         if (newHover != _hovered)
@@ -859,9 +1141,13 @@ public class KitchenGuideApp : MonoBehaviour
             _hovered = newHover;
             if (_hovered != null) _hovered.Bg.color = _hovered.Hover;
         }
+        foreach (var bar in _dragBars)
+            if (bar != _pillDrag)
+                bar.Bg.color = bar == hoveredBar ? bar.Hover : bar.Normal;
 
         // Reticle: the pointer's landing spot (system-UI style), else mid-ray
-        var reticleTarget = borderChip != null ? borderChip.Rect
+        var reticleTarget = hoveredBar != null ? hoveredBar.Rect
+            : borderChip != null ? borderChip.Rect
             : hoveredChip != null ? hoveredChip.Rect : _canvasRect;
         if (hasRay && PointerHitPoint(pointerRay, reticleTarget, out Vector3 pHit))
             _reticle.transform.position = pHit - reticleTarget.transform.forward * 0.012f;
@@ -871,13 +1157,21 @@ public class KitchenGuideApp : MonoBehaviour
             _reticle.transform.position = _cam.transform.position + _cam.transform.forward * 2.5f;
         _reticle.transform.rotation = Quaternion.LookRotation(
             _reticle.transform.position - _cam.transform.position);
-        _reticleImg.color = (_hovered != null || hoveredChip != null || borderChip != null || _dragChip != null || _gripping)
+        _reticleImg.color = (_hovered != null || hoveredChip != null || borderChip != null || hoveredBar != null || _dragChip != null || _pillDrag != null || _gripping)
             ? new Color(0.45f, 1f, 0.6f, 0.9f) : new Color(1f, 1f, 1f, 0.8f);
 
         // --- Pinch: pointer hand selects / drags chips; any hand summons ---
         if (pointerPinch && !_pinchWas && !gripStartedThisFrame && !_gripping)
         {
-            if (borderChip != null && PointerHitPoint(pointerRay, borderChip.Rect, out Vector3 grabHit))
+            if (hoveredBar != null && PointerHitPoint(pointerRay, hoveredBar.Rect, out Vector3 barHit))
+            {
+                _pillDrag = hoveredBar;
+                _pillDrag.Bg.color = _pillDrag.Hover;
+                _dragDistance = Vector3.Distance(pointerRay.origin, barHit);
+                _dragOffset = _pillDrag.Root.position - barHit;
+                if (_pillDrag.Chip != null) UnanchorChip(_pillDrag.Chip);
+            }
+            else if (borderChip != null && PointerHitPoint(pointerRay, borderChip.Rect, out Vector3 grabHit))
             {
                 _dragChip = borderChip;
                 _dragDistance = Vector3.Distance(pointerRay.origin, grabHit);
@@ -886,6 +1180,7 @@ public class KitchenGuideApp : MonoBehaviour
             }
             else if (hoveredChip != null && hoveredChip.Done)
             {
+                if (hoveredChip.Bar != null) _dragBars.Remove(hoveredChip.Bar);
                 Destroy(hoveredChip.Root);
                 _timers.Remove(hoveredChip);
             }
@@ -899,7 +1194,7 @@ public class KitchenGuideApp : MonoBehaviour
         {
             _pinchStartTime = Time.time;
             _pinchFromPanel = _hovered != null || onPanel || hoveredChip != null
-                || borderChip != null || _dragChip != null || _gripping;
+                || borderChip != null || hoveredBar != null || _dragChip != null || _pillDrag != null || _gripping;
             _summonFired = false;
         }
         if (anyPinch && !_pinchFromPanel && !_summonFired
