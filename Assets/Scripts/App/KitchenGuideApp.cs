@@ -283,6 +283,12 @@ public class KitchenGuideApp : MonoBehaviour
     // Hands: tracking scan + occlusion enforcement (proven patterns)
     // ---------------------------------------------------------------
 
+    private void FindHands()
+    {
+        _hands = FindObjectsByType<OVRHand>(FindObjectsInactive.Include);
+        _rescanTimer = 1f; // occlusion enforcement picks them up next frame
+    }
+
     private void LateUpdate()
     {
         EnforceHandVisuals();
@@ -315,6 +321,7 @@ public class KitchenGuideApp : MonoBehaviour
         if (_rescanTimer >= 1.0f)
         {
             _rescanTimer = 0f;
+            SuppressEffectMeshVisuals();
             _handRenderers.Clear();
             foreach (var h in _hands)
                 if (h != null)
