@@ -300,7 +300,7 @@ public class KitchenGuideApp : MonoBehaviour
     // stays alive so Step C can still read scene data from MRUK.
     private void SuppressEffectMeshVisuals()
     {
-        foreach (var em in FindObjectsByType<EffectMesh>(FindObjectsSortMode.None))
+        foreach (var em in FindObjectsByType<EffectMesh>())
             em.ToggleEffectMeshVisibility(false);
     }
 
@@ -869,6 +869,16 @@ public class KitchenGuideApp : MonoBehaviour
         Rect r = bar.Rect.rect;
         return local.x >= r.xMin - 28f && local.x <= r.xMax + 28f
             && local.y >= r.yMin - 80f && local.y <= r.yMax + 16f;
+    }
+
+    private static bool InBand(Rect r, Vector2 p, float inflate, float band)
+    {
+        bool outer = p.x >= r.xMin - inflate && p.x <= r.xMax + inflate
+                  && p.y >= r.yMin - inflate && p.y <= r.yMax + inflate;
+        if (!outer) return false;
+        bool inner = p.x >= r.xMin + band && p.x <= r.xMax - band
+                  && p.y >= r.yMin + band && p.y <= r.yMax - band;
+        return !inner;
     }
 
     private bool PointerOnChipBorder(Ray ray, TimerChip chip)
