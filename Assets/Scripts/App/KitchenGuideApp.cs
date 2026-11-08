@@ -8,10 +8,11 @@
 //     (scale 0.001, TMP text, generous targets)
 //   * SYSTEM-UI interaction model (Boss's direction, 2026-11-07): a hand
 //     pointer ray (OVRHand.PointerPose) with a small reticle, pinch to
-//     select. Panels MOVE by gripping their border with a full hand (the
-//     paperboard model: free position + orientation, pose held on release,
-//     reset if left facing away); timers move by pinch-dragging their
-//     border. Head pose only decides where panels SPAWN. Timer chips
+//     select. Panels MOVE by pinch-dragging the small bar beneath them
+//     (full-hand grip was tried three ways and removed 2026-11-07 — the
+//     Interaction SDK migration owns grabbing from here); timers move by
+//     pinch-dragging their border. Head pose only decides where panels
+//     SPAWN. Timer chips
 //     additionally carry (unsaved) spatial anchors so they stay locked
 //     over appliances.
 //   * a recipe step engine (Back / Next, pinch panel = Next)
@@ -25,6 +26,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using Meta.XR.MRUtilityKit;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
@@ -196,10 +198,6 @@ public class KitchenGuideApp : MonoBehaviour
     private TimerChip _dragChip;
     private float _dragDistance;
     private Vector3 _dragOffset;
-    private bool _gripping;
-    private OVRHand _gripHand;
-    private Vector3 _gripHandPos0, _panelPos0;
-    private Quaternion _gripHandRot0, _panelRot0;
     private bool _anyPinchWas;
     private OVRHand _activeHand;
     private GameObject _reticle;
@@ -285,46 +283,26 @@ public class KitchenGuideApp : MonoBehaviour
     // Hands: tracking scan + occlusion enforcement (proven patterns)
     // ---------------------------------------------------------------
 
-    // Per-hand skeleton bone cache for grip (curl) detection.
-    private sealed class GripRig
-    {
-        public Transform Wrist, M1, M2, M3, R1, R2, R3;
-    }
-
-    private readonly Dictionary<OVRHand, GripRig> _gripRigs = new Dictionary<OVRHand, GripRig>();
-    private float _lastGripHintLog;
-
-    private void FindHands()
-    {
-        _hands = FindObjectsByType<OVRHand>(FindObjectsInactive.Include);
-        _gripRigs.Clear();
-        foreach (var h in _hands)
-        {
-            if (h == null) continue;
-            var skel = h.GetComponentInChildren<OVRSkeleton>(true);
-            if (skel == null) continue;
-            var rig = new GripRig();
-            foreach (var bone in skel.Bones)
-            {
-                switch (bone.Id)
-                {
-                    case OVRSkeleton.BoneId.Hand_WristRoot: rig.Wrist = bone.Transform; break;
-                    case OVRSkeleton.BoneId.Hand_Middle1: rig.M1 = bone.Transform; break;
-                    case OVRSkeleton.BoneId.Hand_Middle2: rig.M2 = bone.Transform; break;
-                    case OVRSkeleton.BoneId.Hand_Middle3: rig.M3 = bone.Transform; break;
-                    case OVRSkeleton.BoneId.Hand_Ring1: rig.R1 = bone.Transform; break;
-                    case OVRSkeleton.BoneId.Hand_Ring2: rig.R2 = bone.Transform; break;
-                    case OVRSkeleton.BoneId.Hand_Ring3: rig.R3 = bone.Transform; break;
-                }
-            }
-            if (rig.Wrist != null) _gripRigs[h] = rig;
-        }
-        _rescanTimer = 1f; // occlusion enforcement picks them up next frame
-    }
-
     private void LateUpdate()
     {
         EnforceHandVisuals();
+    }
+
+    // The Effect Mesh block renders the room model as visible blue
+    // outlines by default — not this app's look, and Boss's first load
+    // had them misaligned besides. Hide the DRAWING only: the mesh object
+    // stays alive so Step C can still read scene data from MRUK.
+    private void SuppressEffectMeshVisuals()
+    {
+        foreach (var em in FindObjectsOfType<MRUKEffectMesh>())
+        {
+            var rend = em.GetComponent<Renderer>();
+            if (rend != null && rend.enabled)
+            {
+                rend.enabled = false;
+                Debug.Log(Tag + " effect mesh visual hidden (scene data kept)");
+            }
+        }
     }
 
     private void EnforceHandVisuals()
@@ -877,89 +855,6 @@ public class KitchenGuideApp : MonoBehaviour
         return rect.rect.Contains(new Vector2(local.x, local.y));
     }
 
-    // Grip = a true FIST. The metric that separates a fist from a pinch is
-    // fingertip-to-wrist distance: in a fist the middle/ring fingertips end
-    // up beside the palm (~7-10 cm from the wrist joint); in a pinch they
-    // stay 15+ cm away no matter how the other fingers co-curl. (v2's
-    // joint-curl sum fired on a slightly bent hand and released late —
-    // Boss: "far too sensitive... sticks to the hand when letting go.")
-    // Engage/release thresholds differ (hysteresis) so letting go is
-    // decisive. OVRHand has no native fist reading — Meta's native grab
-    // detection lives in the Interaction SDK's grab interactors; this is
-    // the skeleton-level equivalent until that migration.
-    private const float FistEngageMeters = 0.095f;
-    private const float FistReleaseMeters = 0.12f;
-
-    private bool FingertipDistances(OVRHand h, out float midTip, out float ringTip)
-    {
-        midTip = 99f; ringTip = 99f;
-        if (h == null || !_gripRigs.TryGetValue(h, out var rig)) return false;
-        if (rig.Wrist == null || rig.M3 == null || rig.R3 == null) return false;
-        midTip = Vector3.Distance(rig.M3.position, rig.Wrist.position);
-        ringTip = Vector3.Distance(rig.R3.position, rig.Wrist.position);
-        return true;
-    }
-
-    private bool FistEngaged(OVRHand h, out float midTip, out float ringTip)
-    {
-        midTip = 99f; ringTip = 99f;
-        if (h == null || !h.IsTracked) return false;
-        if (FingertipDistances(h, out midTip, out ringTip))
-            return midTip <= FistEngageMeters && ringTip <= FistEngageMeters;
-        // No skeleton cached: strict multi-finger pinch fallback.
-        return h.GetFingerPinchStrength(OVRHand.HandFinger.Middle) >= 0.75f
-            && h.GetFingerPinchStrength(OVRHand.HandFinger.Ring) >= 0.75f;
-    }
-
-    private bool FistHeld(OVRHand h)
-    {
-        if (h == null || !h.IsTracked) return false;
-        if (FingertipDistances(h, out float m, out float r))
-            return m <= FistReleaseMeters && r <= FistReleaseMeters;
-        return h.GetFingerPinchStrength(OVRHand.HandFinger.Middle) >= 0.55f
-            && h.GetFingerPinchStrength(OVRHand.HandFinger.Ring) >= 0.55f;
-    }
-
-    // Border band test in a rect's local space: inside the (slightly
-    // inflated) outer edge but NOT inside the shrunk interior.
-    private static bool InBand(Rect r, Vector2 p, float inflate, float band)
-    {
-        bool outer = p.x >= r.xMin - inflate && p.x <= r.xMax + inflate
-                  && p.y >= r.yMin - inflate && p.y <= r.yMax + inflate;
-        if (!outer) return false;
-        bool inner = p.x >= r.xMin + band && p.x <= r.xMax - band
-                  && p.y >= r.yMin + band && p.y <= r.yMax - band;
-        return !inner;
-    }
-
-    private bool PointerOnChipBorder(Ray ray, TimerChip chip)
-    {
-        if (!PointerHitPoint(ray, chip.Rect, out Vector3 hit)) return false;
-        Vector3 local = chip.Rect.InverseTransformPoint(hit);
-        return InBand(chip.Rect.rect, new Vector2(local.x, local.y), 30f, 55f);
-    }
-
-    // Pills are thin — their hit test uses a comfort zone: generous below
-    // the bar (where the hand naturally approaches from), modest above and
-    // to the sides. Hard to miss on purpose.
-    private bool PointerOnBar(Ray ray, DragBar bar)
-    {
-        if (!PointerHitPoint(ray, bar.Rect, out Vector3 hit)) return false;
-        Vector3 local = bar.Rect.InverseTransformPoint(hit);
-        Rect r = bar.Rect.rect;
-        return local.x >= r.xMin - 28f && local.x <= r.xMax + 28f
-            && local.y >= r.yMin - 80f && local.y <= r.yMax + 16f;
-    }
-
-    // A timer corrects its tilt to face the user's head from wherever it
-    // sits — chips live below eye level, so this tilts them up naturally.
-    private void FaceChipToUser(TimerChip chip)
-    {
-        var dir = chip.Root.transform.position - _cam.transform.position;
-        if (dir.sqrMagnitude > 0.001f)
-            chip.Root.transform.rotation = Quaternion.LookRotation(dir.normalized);
-    }
-
     private void Update()
     {
         if (_cam == null) return;
@@ -1013,66 +908,6 @@ public class KitchenGuideApp : MonoBehaviour
         bool hasRay = TryGetPointerRay(out Ray pointerRay);
         bool pointerPinch = hasRay && HandPinching(_activeHand);
 
-        bool gripStartedThisFrame = false;
-        if (!_gripping && _dragChip == null && _pillDrag == null)
-        {
-            var pr = _canvasRect.rect;
-            foreach (var h in _hands)
-            {
-                if (h == null || !h.IsTracked) continue;
-                bool fist = FistEngaged(h, out float mt, out float rt);
-                Vector3 gp = h.PointerPose.position;
-                Vector3 local = _canvasRect.InverseTransformPoint(gp);
-                // Zone: anywhere on the panel or just past its edges — when
-                // you grip an edge, your palm sits over the panel face, so
-                // v1's thin border band almost never contained the hand.
-                bool inZone = local.x >= pr.xMin - 80f && local.x <= pr.xMax + 80f
-                           && local.y >= pr.yMin - 80f && local.y <= pr.yMax + 80f;
-                if (fist && inZone)
-                {
-                    _gripping = true;
-                    gripStartedThisFrame = true;
-                    _gripHand = h;
-                    _gripHandPos0 = gp;
-                    _gripHandRot0 = h.PointerPose.rotation;
-                    _panelPos0 = _panelRoot.transform.position;
-                    _panelRot0 = _panelRoot.transform.rotation;
-                    Debug.Log(Tag + " grip start (midTip " + (mt * 100f).ToString("F0")
-                        + "cm, ringTip " + (rt * 100f).ToString("F0") + "cm)");
-                    break;
-                }
-                if (Time.time - _lastGripHintLog > 1.5f && (fist || mt <= 0.13f || rt <= 0.13f))
-                {
-                    _lastGripHintLog = Time.time;
-                    Debug.Log(Tag + " grip near-miss: fist=" + fist + " inZone=" + inZone
-                        + " midTip " + (mt * 100f).ToString("F0") + "cm ringTip " + (rt * 100f).ToString("F0")
-                        + "cm local (" + local.x.ToString("F0") + ", " + local.y.ToString("F0") + ")");
-                }
-            }
-        }
-        if (_gripping)
-        {
-            if (_gripHand == null || !_gripHand.IsTracked || !FistHeld(_gripHand))
-            {
-                _gripping = false;
-                _gripHand = null;
-                // Left facing away from the user? Reset to the spawn pose.
-                var toUser = _cam.transform.position - _panelRoot.transform.position;
-                float facing = Vector3.Dot(-_panelRoot.transform.forward, toUser.normalized);
-                if (facing < 0.02f) PlacePanel();
-            }
-            else
-            {
-                var hp = _gripHand.PointerPose;
-                Quaternion handDelta = hp.rotation * Quaternion.Inverse(_gripHandRot0);
-                Vector3 targetPos = hp.position + handDelta * (_panelPos0 - _gripHandPos0);
-                Quaternion targetRot = handDelta * _panelRot0;
-                float kg = 1f - Mathf.Exp(-25f * Time.deltaTime);
-                _panelRoot.transform.position = Vector3.Lerp(_panelRoot.transform.position, targetPos, kg);
-                _panelRoot.transform.rotation = Quaternion.Slerp(_panelRoot.transform.rotation, targetRot, kg);
-            }
-        }
-
         // Timer drag in progress: follows the pointer ray at grab range.
         if (_dragChip != null)
         {
@@ -1116,14 +951,14 @@ public class KitchenGuideApp : MonoBehaviour
             }
         }
 
-        CounterState.Dragging = _dragChip != null || _pillDrag != null || _gripping;
+        CounterState.Dragging = _dragChip != null || _pillDrag != null;
 
         DragBar hoveredBar = null;
         TimerChip hoveredChip = null;
         TimerChip borderChip = null;
         AppButton newHover = null;
         bool onPanel = false;
-        if (hasRay && _dragChip == null && _pillDrag == null && !_gripping)
+        if (hasRay && _dragChip == null && _pillDrag == null)
         {
             foreach (var bar in _dragBars)
                 if (bar.Rect.gameObject.activeInHierarchy && PointerOnBar(pointerRay, bar)) { hoveredBar = bar; break; }
@@ -1165,11 +1000,11 @@ public class KitchenGuideApp : MonoBehaviour
             _reticle.transform.position = _cam.transform.position + _cam.transform.forward * 2.5f;
         _reticle.transform.rotation = Quaternion.LookRotation(
             _reticle.transform.position - _cam.transform.position);
-        _reticleImg.color = (_hovered != null || hoveredChip != null || borderChip != null || hoveredBar != null || _dragChip != null || _pillDrag != null || _gripping)
+        _reticleImg.color = (_hovered != null || hoveredChip != null || borderChip != null || hoveredBar != null || _dragChip != null || _pillDrag != null)
             ? new Color(0.45f, 1f, 0.6f, 0.9f) : new Color(1f, 1f, 1f, 0.8f);
 
         // --- Pinch: pointer hand selects / drags chips; any hand summons ---
-        if (pointerPinch && !_pinchWas && !gripStartedThisFrame && !_gripping)
+        if (pointerPinch && !_pinchWas)
         {
             if (hoveredBar != null && PointerHitPoint(pointerRay, hoveredBar.Rect, out Vector3 barHit))
             {
@@ -1202,7 +1037,7 @@ public class KitchenGuideApp : MonoBehaviour
         {
             _pinchStartTime = Time.time;
             _pinchFromPanel = _hovered != null || onPanel || hoveredChip != null
-                || borderChip != null || hoveredBar != null || _dragChip != null || _pillDrag != null || _gripping;
+                || borderChip != null || hoveredBar != null || _dragChip != null || _pillDrag != null;
             _summonFired = false;
         }
         if (anyPinch && !_pinchFromPanel && !_summonFired
