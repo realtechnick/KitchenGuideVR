@@ -547,9 +547,9 @@ public class KitchenGuideApp : MonoBehaviour
         // A visible frame edge: it reads as "grip me" — gripping the border
         // with a full hand is literally how the panel moves now.
         MakeImage(_canvasRect, "Border", Vector2.zero, Vector2.one, Vector2.zero, new Vector2(56f, 56f),
-            new Color(0.04f, 0.22f, 0.11f, 0.75f));
+            new Color(0.04f, 0.22f, 0.11f, 0.9f));
         MakeImage(_canvasRect, "Bg", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
-            new Color(0.10f, 0.24f, 0.15f, 0.82f));
+            new Color(0.10f, 0.24f, 0.15f, 0.60f));
 
         var stepsRt = MakeGroup(_canvasRect, "StepsGroup");
         var listRt = MakeGroup(_canvasRect, "ListGroup");
@@ -593,7 +593,7 @@ public class KitchenGuideApp : MonoBehaviour
 
         // Nav pill under the panel — the "from a distance" drag option that
         // complements border gripping (kept per Boss, 2026-11-07).
-        MakeGrabBar(_panelRoot.transform, new Vector3(0f, -0.19f, 0f), null, new Vector2(140f, 12f));
+        MakeGrabBar(_panelRoot.transform, new Vector3(0f, -0.19f, 0f), null, new Vector2(90f, 9f));
 
         // --- Welcome group: the sous-chef greeting + Let's Cook ---
         var sousT = MakeText(welcomeRt, "SousChef", topL, topR, new Vector2(60f, -250f),
@@ -752,7 +752,7 @@ public class KitchenGuideApp : MonoBehaviour
         MakeImage(rect, "ChipBorder", Vector2.zero, Vector2.one, Vector2.zero, new Vector2(36f, 36f),
             new Color(0.04f, 0.22f, 0.11f, 0.75f));
         var bg = MakeImage(rect, "ChipBg", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
-            new Color(0.10f, 0.24f, 0.15f, 0.85f));
+            new Color(0.10f, 0.24f, 0.15f, 0.66f));
         var nameT = MakeText(rect, "ChipName", new Vector2(0f, 1f), new Vector2(1f, 1f),
             new Vector2(0f, -10f), new Vector2(0f, 42f), 30f, TextAlignmentOptions.Center,
             new Color(0.65f, 0.95f, 0.72f));
@@ -778,7 +778,7 @@ public class KitchenGuideApp : MonoBehaviour
             Root = root, Rect = rect, Bg = bg, TimeText = timeT,
             Remaining = seconds, Done = false
         };
-        chip.Bar = MakeGrabBar(root.transform, new Vector3(0f, -0.125f, 0f), chip, new Vector2(200f, 14f));
+        chip.Bar = MakeGrabBar(root.transform, new Vector3(0f, -0.125f, 0f), chip, new Vector2(140f, 10f));
         _timers.Add(chip);
         FaceChipToUser(chip);
         AnchorChip(chip);
@@ -877,39 +877,47 @@ public class KitchenGuideApp : MonoBehaviour
         return rect.rect.Contains(new Vector2(local.x, local.y));
     }
 
-    // Grip = full-hand closure. Two independent detectors, either may fire:
-    // (a) skeleton curl — the middle/ring fingers' actual joint flexion
-    // from the tracked bones (the true fist signal); (b) multi-finger
-    // pinch strengths (middle+ring toward the thumb). A thumb-index pinch
-    // satisfies NEITHER — middle/ring stay open — so grip and pinch can
-    // never be confused. (v1 used only pinch strengths, strictly, inside a
-    // thin border band: Boss reported grips never registering at all.
-    // v2 widens the zone to the whole panel edge area and logs its work.)
-    private const float GripCurlDegrees = 60f;
-    private const float GripPinchStrength = 0.55f;
+    // Grip = a true FIST. The metric that separates a fist from a pinch is
+    // fingertip-to-wrist distance: in a fist the middle/ring fingertips end
+    // up beside the palm (~7-10 cm from the wrist joint); in a pinch they
+    // stay 15+ cm away no matter how the other fingers co-curl. (v2's
+    // joint-curl sum fired on a slightly bent hand and released late —
+    // Boss: "far too sensitive... sticks to the hand when letting go.")
+    // Engage/release thresholds differ (hysteresis) so letting go is
+    // decisive. OVRHand has no native fist reading — Meta's native grab
+    // detection lives in the Interaction SDK's grab interactors; this is
+    // the skeleton-level equivalent until that migration.
+    private const float FistEngageMeters = 0.095f;
+    private const float FistReleaseMeters = 0.12f;
 
-    private static float FingerCurl(Transform wrist, Transform a, Transform b, Transform c)
+    private bool FingertipDistances(OVRHand h, out float midTip, out float ringTip)
     {
-        if (wrist == null || a == null || b == null || c == null) return 0f;
-        var d0 = a.position - wrist.position;
-        var d1 = b.position - a.position;
-        var d2 = c.position - b.position;
-        if (d0.sqrMagnitude < 1e-8f || d1.sqrMagnitude < 1e-8f || d2.sqrMagnitude < 1e-8f) return 0f;
-        return Vector3.Angle(d0, d1) + Vector3.Angle(d1, d2);
+        midTip = 99f; ringTip = 99f;
+        if (h == null || !_gripRigs.TryGetValue(h, out var rig)) return false;
+        if (rig.Wrist == null || rig.M3 == null || rig.R3 == null) return false;
+        midTip = Vector3.Distance(rig.M3.position, rig.Wrist.position);
+        ringTip = Vector3.Distance(rig.R3.position, rig.Wrist.position);
+        return true;
     }
 
-    private bool HandGripping(OVRHand h, out float midCurl, out float ringCurl)
+    private bool FistEngaged(OVRHand h, out float midTip, out float ringTip)
     {
-        midCurl = 0f; ringCurl = 0f;
+        midTip = 99f; ringTip = 99f;
         if (h == null || !h.IsTracked) return false;
-        if (_gripRigs.TryGetValue(h, out var rig))
-        {
-            midCurl = FingerCurl(rig.Wrist, rig.M1, rig.M2, rig.M3);
-            ringCurl = FingerCurl(rig.Wrist, rig.R1, rig.R2, rig.R3);
-            if (midCurl >= GripCurlDegrees && ringCurl >= GripCurlDegrees) return true;
-        }
-        return h.GetFingerPinchStrength(OVRHand.HandFinger.Middle) >= GripPinchStrength
-            && h.GetFingerPinchStrength(OVRHand.HandFinger.Ring) >= GripPinchStrength;
+        if (FingertipDistances(h, out midTip, out ringTip))
+            return midTip <= FistEngageMeters && ringTip <= FistEngageMeters;
+        // No skeleton cached: strict multi-finger pinch fallback.
+        return h.GetFingerPinchStrength(OVRHand.HandFinger.Middle) >= 0.75f
+            && h.GetFingerPinchStrength(OVRHand.HandFinger.Ring) >= 0.75f;
+    }
+
+    private bool FistHeld(OVRHand h)
+    {
+        if (h == null || !h.IsTracked) return false;
+        if (FingertipDistances(h, out float m, out float r))
+            return m <= FistReleaseMeters && r <= FistReleaseMeters;
+        return h.GetFingerPinchStrength(OVRHand.HandFinger.Middle) >= 0.55f
+            && h.GetFingerPinchStrength(OVRHand.HandFinger.Ring) >= 0.55f;
     }
 
     // Border band test in a rect's local space: inside the (slightly
@@ -939,8 +947,8 @@ public class KitchenGuideApp : MonoBehaviour
         if (!PointerHitPoint(ray, bar.Rect, out Vector3 hit)) return false;
         Vector3 local = bar.Rect.InverseTransformPoint(hit);
         Rect r = bar.Rect.rect;
-        return local.x >= r.xMin - 35f && local.x <= r.xMax + 35f
-            && local.y >= r.yMin - 120f && local.y <= r.yMax + 40f;
+        return local.x >= r.xMin - 28f && local.x <= r.xMax + 28f
+            && local.y >= r.yMin - 80f && local.y <= r.yMax + 16f;
     }
 
     // A timer corrects its tilt to face the user's head from wherever it
@@ -1012,7 +1020,7 @@ public class KitchenGuideApp : MonoBehaviour
             foreach (var h in _hands)
             {
                 if (h == null || !h.IsTracked) continue;
-                if (!HandGripping(h, out float mc, out float rc)) continue;
+                bool fist = FistEngaged(h, out float mt, out float rt);
                 Vector3 gp = h.PointerPose.position;
                 Vector3 local = _canvasRect.InverseTransformPoint(gp);
                 // Zone: anywhere on the panel or just past its edges — when
@@ -1020,7 +1028,7 @@ public class KitchenGuideApp : MonoBehaviour
                 // v1's thin border band almost never contained the hand.
                 bool inZone = local.x >= pr.xMin - 80f && local.x <= pr.xMax + 80f
                            && local.y >= pr.yMin - 80f && local.y <= pr.yMax + 80f;
-                if (inZone)
+                if (fist && inZone)
                 {
                     _gripping = true;
                     gripStartedThisFrame = true;
@@ -1029,22 +1037,22 @@ public class KitchenGuideApp : MonoBehaviour
                     _gripHandRot0 = h.PointerPose.rotation;
                     _panelPos0 = _panelRoot.transform.position;
                     _panelRot0 = _panelRoot.transform.rotation;
-                    Debug.Log(Tag + " grip start (midCurl " + mc.ToString("F0")
-                        + ", ringCurl " + rc.ToString("F0") + ")");
+                    Debug.Log(Tag + " grip start (midTip " + (mt * 100f).ToString("F0")
+                        + "cm, ringTip " + (rt * 100f).ToString("F0") + "cm)");
                     break;
                 }
-                else if (Time.time - _lastGripHintLog > 1.5f)
+                if (Time.time - _lastGripHintLog > 1.5f && (fist || mt <= 0.13f || rt <= 0.13f))
                 {
                     _lastGripHintLog = Time.time;
-                    Debug.Log(Tag + " grip near-miss: fist closed (midCurl " + mc.ToString("F0")
-                        + ", ringCurl " + rc.ToString("F0") + ") but hand at panel-local ("
-                        + local.x.ToString("F0") + ", " + local.y.ToString("F0") + ") — outside the zone");
+                    Debug.Log(Tag + " grip near-miss: fist=" + fist + " inZone=" + inZone
+                        + " midTip " + (mt * 100f).ToString("F0") + "cm ringTip " + (rt * 100f).ToString("F0")
+                        + "cm local (" + local.x.ToString("F0") + ", " + local.y.ToString("F0") + ")");
                 }
             }
         }
         if (_gripping)
         {
-            if (_gripHand == null || !_gripHand.IsTracked || !HandGripping(_gripHand, out _, out _))
+            if (_gripHand == null || !_gripHand.IsTracked || !FistHeld(_gripHand))
             {
                 _gripping = false;
                 _gripHand = null;
